@@ -74,8 +74,8 @@ NS_ENTRY_MODE    = os.environ.get('NS_ENTRY_MODE', 'limit_fvg').strip().lower() 
 NS_FVG_EDGE      = os.environ.get('NS_FVG_EDGE', 'near').strip().lower()     # titik limit di FVG: 'near' (tepi terdekat ke harga sekarang, default) | 'mid' | 'far'
 NS_MAX_ENTRY     = int(os.environ.get('NS_MAX_ENTRY', 5))           # maksimal entry per BOS (setelah SL boleh entry lagi di acuan lain, sampai batas ini); 0 = tak terbatas
 NS_ACUAN_MODE    = os.environ.get('NS_ACUAN_MODE', 'swing_ditembus').strip().lower()   # acuan H1: 'swing_ditembus' (default: Long: P = LOW valid, swing = HIGH; Short: P = HIGH, swing = LOW; titik acuan = swing, aktif setelah close H1 menembusnya) | 'swing_antara' (peran dibalik: Long: P = HIGH, swing = LOW; aktif saat P valid confirmed) | 'level' (cara lama: level baru berFVG)
-NS_H1_P_EXCEED   = os.environ.get('NS_H1_P_EXCEED', '1').strip() not in ('0', 'false', 'False', '')   # P H1 baru HARUS melebihi P valid sebelumnya (lebih ekstrem, sama persis tidak); P pertama tidak punya swing. 0 = semua ekstrem valid dianggap P (cara sebelumnya)
-NS_SL_BUF        = float(os.environ.get('NS_SL_BUF', '0.00'))       # buffer SL di luar ujung FVG (0.002 = 0.2%)
+NS_H1_P_EXCEED   = os.environ.get('NS_H1_P_EXCEED', '0').strip() not in ('0', 'false', 'False', '')   # 1 = P H1 baru HARUS melebihi P valid sebelumnya (lebih ekstrem, sama persis tidak; P pertama tidak punya swing). 0 (default) = semua ekstrem valid dianggap P, swing pertama dihitung dari candle break-in
+NS_SL_BUF        = float(os.environ.get('NS_SL_BUF', '0.002'))       # buffer SL di luar ujung FVG (0.002 = 0.2%)
 NS_RANGE_MELEBAR = os.environ.get('NS_RANGE_MODE', 'melebar').strip().lower() != 'tetap'   # range acuan melebar mengikuti titik terjauh berjalan
 
 LEVERAGE           = float(os.environ.get('LEVERAGE', '50'))
@@ -97,7 +97,7 @@ def _default_end_date():
 def _default_start_date():
     d = datetime.now(timezone.utc)
     # mundur 1 tahun kalender dari hari ini
-    return (d - timedelta(days=655)).strftime('%Y-%m-%d')
+    return (d - timedelta(days=660)).strftime('%Y-%m-%d')
 
 BACKTEST_START_DATE = os.environ.get('BACKTEST_START_DATE', _default_start_date())
 BACKTEST_END_DATE   = os.environ.get('BACKTEST_END_DATE', _default_end_date())
