@@ -65,7 +65,7 @@ IFVG_LOOKBACK    = int(os.environ.get('IFVG_LOOKBACK', 48))          # FVG tidak
 STRATEGY         = os.environ.get('STRATEGY', 'multi_acuan').strip().lower()
 NS_SWING_EXT     = int(os.environ.get('NS_SWING_EXT', 5))            # titik terjauh harus swing: N candle H1 kiri & kanan tidak melebihi
 NS_LOOKBACK      = int(os.environ.get('NS_LOOKBACK', 20))            # FVG lama boleh dari N candle M5 sebelum acuan tersentuh
-NS_MSS_SWING     = int(os.environ.get('NS_MSS_SWING', 1))            # swing fractal M5 utk MSS: N candle kiri & kanan (default 1)
+NS_MSS_SWING     = int(os.environ.get('NS_MSS_SWING', 5))            # swing fractal M5 utk MSS: N candle kiri & kanan (default 1)
 NS_SW_EQUAL      = os.environ.get('NS_SW_EQUAL', 'merge').strip().lower()   # swing fractal M5, angka sama pada candle berurutan: 'merge' (default: dijadikan SATU KESATUAN: candle sebelum & sesudah kesatuan tidak boleh melebihi/sama) | 'invalid' (sama = bukan swing) | 'valid' (sama boleh, cara lama)
 NS_H1_EQUAL      = os.environ.get('NS_H1_EQUAL', 'merge').strip().lower()   # P & swing H1, angka sama pada candle berurutan: 'merge' (default, satu kesatuan) | 'invalid' (sama = tidak valid)
 NS_MSS_REF       = os.environ.get('NS_MSS_REF', 'range').strip().lower()   # 'range' (default): swing = tertinggi/terendah antara P lama & P baru, dihitung ulang tiap P bergeser | 'range_max' (swing tak pernah turun) | 'fractal' (lama)
