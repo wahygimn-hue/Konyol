@@ -111,15 +111,9 @@ os.makedirs(CACHE_DIR, exist_ok=True)
 # CATATAN: daftar ini dipilih dari strategi lama -- jalankan ulang backtest dgn
 # strategi sekarang lalu filter ulang kalau perlu.
 SYMBOLS = [
-    'PENDLEUSDT', 'PYTHUSDT', 'BLURUSDT', '1000BONKUSDT', 'WUSDT',
-    'USUALUSDT', 'ETHFIUSDT', 'LABUSDT', 'IOTAUSDT', '1000FLOKIUSDT',
-    'HBARUSDT', 'PLUMEUSDT', 'BERAUSDT', 'MASKUSDT', 'ESPORTSUSDT',
-    'IMXUSDT', 'CRVUSDT', 'ACHUSDT', 'FARTCOINUSDT', 'AEVOUSDT',
-    'ICPUSDT', 'ENAUSDT', 'ADAUSDT', 'WIFUSDT', 'DYDXUSDT',
-    'BATUSDT', 'LRCUSDT', 'IOUSDT', 'BOMEUSDT', 'OPUSDT',
-    'POPCATUSDT', 'WOOUSDT', 'STORJUSDT', 'ROSEUSDT', 'POWRUSDT',
-    'JUPUSDT', 'HUSDT', 'STRKUSDT', 'IOTXUSDT', 'MEWUSDT',
-    'VIRTUALUSDT', 'POLUSDT', 'CKBUSDT', 'ASTRUSDT'
+    'HUSDT', 'AEVOUSDT', 'STRKUSDT', 'IOUSDT', 'ICPUSDT',
+'PYTHUSDT', 'ESPORTSUSDT', 'BATUSDT', 'USUALUSDT', 'WUSDT',
+'WOOUSDT', '1000BONKUSDT',
 ]
 # Override daftar koin lewat env, mis. SYMBOLS=POLUSDT atau SYMBOLS=POLUSDT,SOLUSDT (kosong = pakai daftar di atas)
 if os.environ.get('SYMBOLS', '').strip():
