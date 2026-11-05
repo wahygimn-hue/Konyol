@@ -49,8 +49,8 @@ from pybit.unified_trading import HTTP
 # CONFIG (override via environment variable kalau perlu)
 # ============================================================
 PORT             = int(os.environ.get('PORT', 8080))
-INITIAL_BALANCE  = float(os.environ.get('INITIAL_BALANCE', '10.0'))   # modal awal, 1 akun bersama
-RISK_PCT         = float(os.environ.get('RISK_PCT', '0.05'))          # risk per trade dari balance (compound)
+INITIAL_BALANCE  = float(os.environ.get('INITIAL_BALANCE', '100.0'))   # modal awal, 1 akun bersama
+RISK_PCT         = float(os.environ.get('RISK_PCT', '0.01'))          # risk per trade dari balance (compound)
 FEE_ENTRY_PCT    = float(os.environ.get('FEE_ENTRY_PCT', '0.0006'))
 FEE_EXIT_PCT     = float(os.environ.get('FEE_EXIT_PCT', str(0.0006 * 3)))
 
@@ -64,7 +64,7 @@ IFVG_LOOKBACK    = int(os.environ.get('IFVG_LOOKBACK', 48))          # FVG tidak
 # --- STRATEGI: 'multi_acuan' (baru, default) | 'ifvg_ema' (strategi lama EMA21/30 + IFVG limit + target level lawan) ---
 STRATEGY         = os.environ.get('STRATEGY', 'multi_acuan').strip().lower()
 NS_SWING_EXT     = int(os.environ.get('NS_SWING_EXT', 5))            # titik terjauh harus swing: N candle H1 kiri & kanan tidak melebihi
-NS_LOOKBACK      = int(os.environ.get('NS_LOOKBACK', 20))            # FVG lama boleh dari N candle M5 sebelum acuan tersentuh
+NS_LOOKBACK      = int(os.environ.get('NS_LOOKBACK', 100))            # FVG lama boleh dari N candle M5 sebelum acuan tersentuh
 NS_MSS_SWING     = int(os.environ.get('NS_MSS_SWING', 5))            # swing fractal M5 utk MSS: N candle kiri & kanan (default 1)
 NS_SW_EQUAL      = os.environ.get('NS_SW_EQUAL', 'merge').strip().lower()   # swing fractal M5, angka sama pada candle berurutan: 'merge' (default: dijadikan SATU KESATUAN: candle sebelum & sesudah kesatuan tidak boleh melebihi/sama) | 'invalid' (sama = bukan swing) | 'valid' (sama boleh, cara lama)
 NS_H1_EQUAL      = os.environ.get('NS_H1_EQUAL', 'merge').strip().lower()   # P & swing H1, angka sama pada candle berurutan: 'merge' (default, satu kesatuan) | 'invalid' (sama = tidak valid)
@@ -110,10 +110,15 @@ os.makedirs(CACHE_DIR, exist_ok=True)
 # CATATAN: daftar ini dipilih dari strategi lama -- jalankan ulang backtest dgn
 # strategi sekarang lalu filter ulang kalau perlu.
 SYMBOLS = [
-    'HUSDT', 'DYDXUSDT', 'POLUSDT', 'IOUSDT', 'USUALUSDT',
-'BOMEUSDT', '1000BONKUSDT', 'LRCUSDT', 'PYTHUSDT', 'VIRTUALUSDT',
-'AEVOUSDT', 'STRKUSDT', 'WOOUSDT', 'ETHFIUSDT', 'LABUSDT',
-'PENDLEUSDT', 'MEWUSDT'
+    'PENDLEUSDT', 'PYTHUSDT', 'BLURUSDT', '1000BONKUSDT', 'WUSDT',
+    'USUALUSDT', 'ETHFIUSDT', 'LABUSDT', 'IOTAUSDT', '1000FLOKIUSDT',
+    'HBARUSDT', 'PLUMEUSDT', 'BERAUSDT', 'MASKUSDT', 'ESPORTSUSDT',
+    'IMXUSDT', 'CRVUSDT', 'ACHUSDT', 'FARTCOINUSDT', 'AEVOUSDT',
+    'ICPUSDT', 'ENAUSDT', 'ADAUSDT', 'WIFUSDT', 'DYDXUSDT',
+    'BATUSDT', 'LRCUSDT', 'IOUSDT', 'BOMEUSDT', 'OPUSDT',
+    'POPCATUSDT', 'WOOUSDT', 'STORJUSDT', 'ROSEUSDT', 'POWRUSDT',
+    'JUPUSDT', 'HUSDT', 'STRKUSDT', 'IOTXUSDT', 'MEWUSDT',
+    'VIRTUALUSDT', 'POLUSDT', 'CKBUSDT', 'ASTRUSDT'
 ]
 # Override daftar koin lewat env, mis. SYMBOLS=POLUSDT atau SYMBOLS=POLUSDT,SOLUSDT (kosong = pakai daftar di atas)
 if os.environ.get('SYMBOLS', '').strip():
