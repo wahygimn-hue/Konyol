@@ -1284,12 +1284,7 @@ def ns_chain(S, LV, X):
                     slv = (float(L5[P]) * (1 - NS_SL_BUF)) if sup else (float(H5[P]) * (1 + NS_SL_BUF))
                 if bs is not None and fvg_b is not None:
                     bd = dict(bs[1], n_mss=n_mss); po = bd['conf']
-                    zl_, zh_ = (fvg_b[1], fvg_b[2]) if sup else (fvg_b[1], fvg_b[2])
-                    if sup:
-                        entry = {'near': zh_, 'mid': (zl_ + zh_) / 2, 'far': zl_}.get(NS_FVG_EDGE, zh_)
-                    else:
-                        entry = {'near': zl_, 'mid': (zl_ + zh_) / 2, 'far': zh_}.get(NS_FVG_EDGE, zl_)
-                    entry = float(entry)
+                    entry = float(bd['entry'])      # limit tetap di swing low (Short: swing high) BOS; FVG di MSS hanya syarat
                     ok = (slv < entry < BE) if sup else (BE < entry < slv)
                     e2 = min(stop, n5)
                     if ok and po + 1 < e2:
