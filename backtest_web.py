@@ -2,7 +2,7 @@
 backtest_web.py — DEFAULT: STRATEGY=multi_acuan  (S&R H1 berFVG -> break-out/break-in -> BOS -> multi-acuan -> MSS M5)
 Strategi lama (EMA21/30 + IFVG limit + target level lawan) tetap ada: set env STRATEGY=ifvg_ema.
 Aturan lengkap strategi baru ada di komentar blok "STRATEGI BARU" (cari 'STRATEGI BARU' di file ini).
-Env strategi baru: NS_SWING_EXT=5, NS_LOOKBACK=20, NS_MSS_SWING=1, NS_SL_BUF=0.002, NS_RANGE_MODE=melebar|tetap, NS_ACUAN_MODE=swing_antara|swing_ditembus|level, NS_ACUAN_FVG=1|0 (acuan digeser ke FVG H1 di bawah swing utk Long / di atas utk Short), NS_ENTRY_MODE=bos_swinglow|limit_fvg|market, NS_FVG_EDGE=near|mid|far, NS_MAX_ENTRY=5 (0 = tak terbatas).
+Env strategi baru: NS_SWING_EXT=5, NS_LOOKBACK=20, NS_MSS_SWING=1, NS_SL_BUF=0.002, NS_RANGE_MODE=melebar|tetap, NS_ACUAN_MODE=swing_antara|swing_ditembus|level, NS_ACUAN_FVG=1|0 (acuan digeser ke FVG H1 di bawah swing utk Long / di atas utk Short), NS_ACUAN_FIB=0.5 (acuan FVG harus di kedalaman >= 50% Fibonacci retracement range dinamis dz..titik terjauh), NS_ENTRY_MODE=bos_swinglow|limit_fvg|market, NS_FVG_EDGE=near|mid|far, NS_MAX_ENTRY=5 (0 = tak terbatas).
 Env umum: RISK_PCT, INITIAL_BALANCE, FEE_ENTRY_PCT, FEE_EXIT_PCT, LEVERAGE, MAX_CONCURRENT, BACKTEST_START_DATE/END_DATE.
 Endpoint: /  (dashboard) | /trades.csv | /setups.txt (format txt per entry: Coin, Dir, Hasil, Level, Tanggal level, Acuan, P, P tanggal, Swing, Swing tanggal, Mss tanggal) | /logs
 =======================================================================================================================
@@ -76,7 +76,9 @@ NS_FVG_EDGE      = os.environ.get('NS_FVG_EDGE', 'near').strip().lower()     # t
 NS_MAX_ENTRY     = int(os.environ.get('NS_MAX_ENTRY', 10))           # maksimal entry per BOS (setelah SL boleh entry lagi di acuan lain, sampai batas ini); 0 = tak terbatas
 NS_ACUAN_MODE    = os.environ.get('NS_ACUAN_MODE', 'swing_antara').strip().lower()   # acuan H1: 'swing_antara' (default: Long: P = HIGH valid, swing = LOW terendah di antara 2 P; Short: P = LOW, swing = HIGH; titik acuan = swing, aktif saat P valid confirmed) | 'swing_ditembus' (peran dibalik: Long P = low, swing = high; aktif setelah close H1 menembus swing) | 'level' (cara lama: level baru berFVG)
 NS_H1_P_EXCEED   = os.environ.get('NS_H1_P_EXCEED', '1').strip() not in ('0', 'false', 'False', '')   # 1 (default) = P H1 baru HARUS melebihi P valid sebelumnya (lebih ekstrem, sama persis tidak; P pertama tidak punya swing). 0 = semua ekstrem valid dianggap P, swing pertama dihitung dari candle break-in
-NS_ACUAN_FVG     = os.environ.get('NS_ACUAN_FVG', '0').strip() not in ('0', 'false', 'False', '')   # 1 (default) = acuan H1 (swing) digeser ke FVG H1 terdekat di BAWAH acuan (Long; Short: di ATAS acuan) yang gap-nya belum hilang: titik acuan = HIGH candle pertama FVG (Short: LOW candle pertama). Tidak ada FVG -> acuan tetap di swing. 0 = acuan = swing saja
+NS_ACUAN_FIB     = float(os.environ.get('NS_ACUAN_FIB', 0.5))      # kedalaman minimum Fibonacci retracement utk acuan FVG H1 (0.5 = 50%). Range: 100% = titik terjauh bo..bi (dz), 0% = titik terjauh berjalan (Long: high tertinggi sejak level, Short: low terendah). Titik acuan FVG (high/low c1) harus >= kedalaman ini; belum ada -> tunggu range melebar. 0 = tidak dicek (hanya berlaku kalau NS_ACUAN_FVG=1)
+NS_ACUAN_FVG_FRESH = os.environ.get('NS_ACUAN_FVG_FRESH', '1').strip() not in ('0', 'false', 'False', '')   # 1 (default) = FVG H1 untuk acuan harus FRESH: sejak candle ke-4 (setelah c3) s/d sebelum candle BOS (titik terjauh tertembus) tidak boleh ada candle yang menyentuh gap. Menyentuh = low <= batas atas gap (Long) / high >= batas bawah gap (Short). 0 = tidak dicek
+NS_ACUAN_FVG     = os.environ.get('NS_ACUAN_FVG', '1').strip() not in ('0', 'false', 'False', '')   # 1 (default) = acuan H1 (swing) digeser ke FVG H1 terdekat di BAWAH acuan (Long; Short: di ATAS acuan) yang gap-nya belum hilang: titik acuan = HIGH candle pertama FVG (Short: LOW candle pertama). Tidak ada FVG -> acuan tetap di swing. 0 = acuan = swing saja
 NS_SL_BUF        = float(os.environ.get('NS_SL_BUF', '0.00'))       # buffer SL di luar ujung FVG (0.002 = 0.2%)
 NS_RANGE_MELEBAR = os.environ.get('NS_RANGE_MODE', 'melebar').strip().lower() != 'tetap'   # range acuan melebar mengikuti titik terjauh berjalan
 
@@ -111,9 +113,15 @@ os.makedirs(CACHE_DIR, exist_ok=True)
 # CATATAN: daftar ini dipilih dari strategi lama -- jalankan ulang backtest dgn
 # strategi sekarang lalu filter ulang kalau perlu.
 SYMBOLS = [
-    'HUSDT', 'AEVOUSDT', 'STRKUSDT', 'IOUSDT', 'ICPUSDT',
-'PYTHUSDT', 'ESPORTSUSDT', 'BATUSDT', 'USUALUSDT', 'WUSDT',
-'WOOUSDT', '1000BONKUSDT',
+    'PENDLEUSDT', 'PYTHUSDT', 'BLURUSDT', '1000BONKUSDT', 'WUSDT',
+    'USUALUSDT', 'ETHFIUSDT', 'LABUSDT', 'IOTAUSDT', '1000FLOKIUSDT',
+    'HBARUSDT', 'PLUMEUSDT', 'BERAUSDT', 'MASKUSDT', 'ESPORTSUSDT',
+    'IMXUSDT', 'CRVUSDT', 'ACHUSDT', 'FARTCOINUSDT', 'AEVOUSDT',
+    'ICPUSDT', 'ENAUSDT', 'ADAUSDT', 'WIFUSDT', 'DYDXUSDT',
+    'BATUSDT', 'LRCUSDT', 'IOUSDT', 'BOMEUSDT', 'OPUSDT',
+    'POPCATUSDT', 'WOOUSDT', 'STORJUSDT', 'ROSEUSDT', 'POWRUSDT',
+    'JUPUSDT', 'HUSDT', 'STRKUSDT', 'IOTXUSDT', 'MEWUSDT',
+    'VIRTUALUSDT', 'POLUSDT', 'CKBUSDT', 'ASTRUSDT'
 ]
 # Override daftar koin lewat env, mis. SYMBOLS=POLUSDT atau SYMBOLS=POLUSDT,SOLUSDT (kosong = pakai daftar di atas)
 if os.environ.get('SYMBOLS', '').strip():
@@ -575,7 +583,9 @@ def detect_all_events(df, m5):
 #    sampai level baru itu selesai; =tetap: batas = titik terjauh saat BOS). Acuan aktif setelah candle ke-4 level barunya closed.
 #    SEMUA acuan dipakai (tidak perlu di-break).
 #    NS_ACUAN_FVG=1: begitu acuan swing terbentuk, cek FVG H1 di BAWAH acuan (Long; Short: di ATAS acuan) yang gap-nya belum hilang. Ada -> titik acuan
-#    = HIGH candle pertama FVG itu (Short: LOW candle pertama). Beberapa FVG -> yang terdekat dgn swing. Tidak ada -> acuan tetap di swing. Acuan aktif setelah candle ke-4 level barunya closed.
+#    = HIGH candle pertama FVG itu (Short: LOW candle pertama). FVG harus FRESH (NS_ACUAN_FVG_FRESH=1): candle ke-4 dst tidak menyentuh gap sebelum candle BOS (titik terjauh tertembus).
+#    FIBONACCI (NS_ACUAN_FIB=0.5): range H1 dari dz (100%, titik terjauh bo..bi) sampai titik terjauh berjalan (0%, yang jadi TP); titik acuan FVG harus di kedalaman >= 50%.
+#    Belum ada FVG yang cukup dalam -> tunggu range melebar (acuan aktif di candle H1 saat syarat terpenuhi); gap hilang / level mati dulu -> tidak dipakai. Beberapa FVG -> yang terdekat dgn swing. Tidak ada -> acuan tetap di swing. Acuan aktif setelah candle ke-4 level barunya closed.
 # 7) MONITORING M5 (tanpa expired): acuan TERSENTUH (wick boleh) -> titik BOS (high tertinggi / low terendah sejak BOS) DIKUNCI.
 #    Lalu tunggu MSS (Market Structure Shift, SMC) di M5: Long = setelah low terendah sejak sentuh (P), candle M5 pertama yang CLOSE di atas
 #    swing high terakhir sebelum P (fractal NS_MSS_SWING=2 kiri-kanan, boleh dari NS_LOOKBACK=20 candle sebelum sentuh). Short = kebalikannya.
@@ -770,7 +780,7 @@ def _ns_find_mss(sup, tj0, stop, H5, L5, C5, resume=None):
     Swing referensi:
      - Selama baru ada 1 P valid: swing fractal (NS_MSS_SWING kiri-kanan, default 1; angka sama dgn tetangga = BUKAN swing, NS_SW_EQUAL='invalid';
        boleh dari NS_LOOKBACK candle sebelum sentuh) terakhir sebelum P.
-     - NS_MSS_REF='range' (default): tiap P valid baru muncul, swing = swing FRACTAL (NS_MSS_SWING kiri-kanan) dengan HIGH TERTINGGI (Short: LOW TERENDAH) antara P valid lama s/d
+     - NS_MSS_REF='range' (default): swing BARU ADA kalau sebuah P valid tertembus P valid baru (ekstrem lebih jauh); P pertama saja belum punya swing (tidak ada fallback ke fractal sebelum P). Tiap P valid baru muncul, swing = swing FRACTAL (NS_MSS_SWING kiri-kanan) dengan HIGH TERTINGGI (Short: LOW TERENDAH) antara P valid lama s/d
        P valid baru (inklusif). Dihitung ulang di SETIAP pergeseran P (tidak kumulatif). Tidak ada swing fractal di range -> swing lama dipertahankan.
      - NS_MSS_REF='range_max': sama, tapi swing hanya naik (Long) / turun (Short), tidak pernah diturunkan (tertinggi sejak P pertama).
      - NS_MSS_REF='fractal' (cara lama): referensi selalu swing fractal terakhir sebelum P.
@@ -846,7 +856,9 @@ def _ns_find_mss(sup, tj0, stop, H5, L5, C5, resume=None):
             Pv = cand; Pv_last = cand_last
         if Pv != cand:
             continue
-        if use_range and rref is not None:
+        if use_range:
+            if rref is None:
+                continue        # belum ada P yang tertembus P baru (atau belum ada swing di antaranya) -> belum ada swing, belum bisa MSS
             ref = rref
         else:
             k = bisect.bisect_right(sw, min(cand - 1, t - N)) - 1
@@ -1007,32 +1019,88 @@ def _ns_h1_swings(sup, bi, hh, hl, hc, mode):
     return out
 
 
-def _ns_h1_fvg_acuan(sup, A, lvl, lo, live, hh, hl):
+def _ns_h1_fvg_acuan(sup, A, lvl, lo, live, hh, hl, bos=None, hc=None):
     """Acuan H1 versi FVG. Setelah acuan swing A terbentuk (aktif di candle H1 `live`), cari FVG H1 yang MASIH PUNYA GAP di sisi
     luar acuan: Long -> FVG bullish (low c3 > high c1) di BAWAH A; Short -> FVG bearish (high c3 < low c1) di ATAS A.
     'Masih punya gap' = sejak c3 s/d candle `live` tidak ada candle yang menutup gap sampai ujung c1 (gap boleh menyusut, asal tidak hilang seluruhnya).
     Gap sisa (ujung terdekat ke A, setelah menyusut) harus ada di sisi luar A (Long: <= A, Short: >= A).
+    FRESH (NS_ACUAN_FVG_FRESH=1, perlu `bos`): candle ke-4 dst (setelah c3) s/d SEBELUM candle BOS (titik terjauh tertembus) tidak boleh menyentuh gap:
+      Long: low >= ... tidak boleh <= low c3 (batas atas gap); Short: high tidak boleh >= high c3 (batas bawah gap). Sentuhan setelah BOS tidak mendiskualifikasi
+      (selama gap belum hilang seluruhnya). FVG yang c3-nya sudah di/setelah candle BOS tidak punya jendela cek -> fresh.
     Titik acuan baru = HIGH candle pertama (c1) FVG (Short: LOW c1). Titik itu tidak boleh keluar dari batas range `lvl` (= titik terjauh antara break-out & break-in: Long low terendah bo..bi, Short high tertinggi bo..bi).
     Kalau ada beberapa FVG, dipakai yang TERDEKAT dengan A. Kandidat dicari dari candle c1 level (lo) s/d `live`.
-    Return (harga acuan baru, idx candle c1 FVG) / None (tetap pakai swing)."""
+    FIBONACCI (NS_ACUAN_FIB > 0, perlu `hc`): range = dz (100%, titik terjauh bo..bi) s/d titik terjauh berjalan (0%; Long high tertinggi sejak lo, Short low terendah),
+      range melebar tiap ada ekstrem baru. Titik acuan FVG (high c1 / Short low c1) harus berada di kedalaman >= NS_ACUAN_FIB. Kalau belum, FVG itu menunggu sampai range melebar
+      cukup (acuan baru aktif di candle H1 itu). FVG yang gap-nya keburu hilang seluruhnya, atau level mati (close H1 menembus dz) sebelum memenuhi syarat -> tidak dipakai.
+      Beberapa FVG: yang paling dulu memenuhi syarat; kalau bersamaan, yang terdekat dengan A.
+    Return (harga acuan baru, idx candle c1 FVG, idx candle H1 acuan aktif) / None (tidak ada FVG sama sekali -> pakai swing) /
+           False (ada FVG tetapi tidak ada yang memenuhi syarat kedalaman sebelum gap hilang/level mati -> acuan swing ini dilewati)."""
     if live - 1 <= lo:
         return None
+    nc = live - 1 - lo                                              # jumlah kandidat c1 (a = lo .. live-2; k = a+2 = c3)
+    use_fresh = NS_ACUAN_FVG_FRESH and bos is not None
+    if use_fresh:
+        Lp = max(bos - (lo + 2), 0)                                 # candle lo+2 .. bos-1 (sebelum candle BOS)
+        idx = np.arange(nc) + 1                                     # offset k+1 (candle ke-4) relatif ke lo+2
+        m = idx < Lp
     if sup:
         seg = hl[lo + 2:live + 1]                                   # low c3 (k = lo+2 .. live)
         rem = np.minimum.accumulate(seg[::-1])[::-1]                # rem[k] = low terendah k..live (ujung atas gap sisa)
         c1 = hh[lo:live - 1]                                        # high c1 = ujung bawah gap
         ok = (rem > c1) & (rem <= A) & (c1 >= lvl)
+        if use_fresh:
+            pre = hl[lo + 2:bos] if Lp > 0 else hl[:0]
+            sm = np.minimum.accumulate(pre[::-1])[::-1] if Lp > 0 else pre
+            pm = np.full(nc, np.inf); pm[m] = sm[idx[m]]            # low terendah candle ke-4 s/d sebelum BOS
+            ok &= pm > seg[:nc]                                      # tidak ada yang menyentuh batas atas gap (low c3)
         pick = lambda v: int(np.flatnonzero(ok)[v[ok].argmax()])    # terdekat ke A = high c1 tertinggi
     else:
         seg = hh[lo + 2:live + 1]
         rem = np.maximum.accumulate(seg[::-1])[::-1]                # high tertinggi k..live (ujung bawah gap sisa)
         c1 = hl[lo:live - 1]                                        # low c1 = ujung atas gap
         ok = (rem < c1) & (rem >= A) & (c1 <= lvl)
+        if use_fresh:
+            pre = hh[lo + 2:bos] if Lp > 0 else hh[:0]
+            sm = np.maximum.accumulate(pre[::-1])[::-1] if Lp > 0 else pre
+            pm = np.full(nc, -np.inf); pm[m] = sm[idx[m]]           # high tertinggi candle ke-4 s/d sebelum BOS
+            ok &= pm < seg[:nc]                                      # tidak ada yang menyentuh batas bawah gap (high c3)
         pick = lambda v: int(np.flatnonzero(ok)[v[ok].argmin()])    # terdekat ke A = low c1 terendah
     if not ok.any():
         return None
-    j = pick(c1)
-    return float(c1[j]), lo + j
+    if not (NS_ACUAN_FIB > 0 and hc is not None):
+        j = pick(c1)
+        return float(c1[j]), lo + j, live
+    d = min(float(NS_ACUAN_FIB), 0.999)
+    n = len(hh)
+    cj = np.flatnonzero(ok)                                         # offset kandidat (a = lo + j)
+    treq = (c1[cj] - d * lvl) / (1.0 - d)                           # titik terjauh (0%) minimal agar c1 ada di kedalaman >= d
+    if sup:
+        top = np.maximum.accumulate(hh[lo:])                        # 0% berjalan (Long: high tertinggi sejak lo)
+        tt = lo + np.searchsorted(top, treq, side='left')           # candle pertama yang range-nya cukup lebar
+        dd = np.flatnonzero(hc[live:] < lvl)
+    else:
+        top = np.minimum.accumulate(hl[lo:])                        # 0% berjalan (Short: low terendah sejak lo)
+        tt = lo + np.searchsorted(-top, -treq, side='left')
+        dd = np.flatnonzero(hc[live:] > lvl)
+    dead_h1 = live + int(dd[0]) if len(dd) else n                   # level mati: close H1 menembus dz
+    tact = np.maximum(tt, live)
+    best = None
+    for m, jj in enumerate(cj):
+        ta = int(tact[m])
+        if ta >= n or ta >= dead_h1:
+            continue
+        k = lo + int(jj) + 2
+        c1v = float(c1[jj])
+        nxt = (hl[k + 1:] <= c1v) if sup else (hh[k + 1:] >= c1v)   # gap hilang seluruhnya (candle ke-4 dst menyentuh ujung c1)
+        tf = k + 1 + int(nxt.argmax()) if nxt.any() else n
+        if ta >= tf:
+            continue
+        key = (ta, -c1v if sup else c1v)                            # paling dulu memenuhi syarat; bersamaan -> terdekat dgn A
+        if best is None or key < best[0]:
+            best = (key, c1v, lo + int(jj), ta)
+    if best is None:
+        return False
+    return best[1], best[2], best[3]
 
 
 def ns_chain(S, LV, X):
@@ -1058,13 +1126,19 @@ def ns_chain(S, LV, X):
                 rext = ext
             if ((dz <= A <= rext) if sup else (rext <= A <= dz)):      # range: dari titik terjauh bo..bi (dz) s/d titik terjauh berjalan (bukan level)
                 a_ts = int(hts[sidx])
-                if NS_ACUAN_FVG:        # acuan digeser ke FVG H1 di bawah (Long) / atas (Short) swing yang gap-nya masih ada
-                    fa = _ns_h1_fvg_acuan(sup, A, dz, i, live, hh, hl)
+                t_act = live
+                if NS_ACUAN_FVG:        # acuan digeser ke FVG H1 di bawah (Long) / atas (Short) swing yang gap-nya masih ada (+ fresh, + kedalaman Fibonacci)
+                    fa = _ns_h1_fvg_acuan(sup, A, dz, i, live, hh, hl, bos, hc)
+                    if fa is False:
+                        continue        # ada FVG tapi tidak ada yang memenuhi kedalaman Fibonacci sebelum gap hilang / level mati
                     if fa is not None:
-                        if any(x[1] == fa[0] for x in acs):
-                            continue    # FVG yang sama sudah jadi acuan dari swing sebelumnya
-                        A, a_ts = fa[0], int(hts[fa[1]])
-                av = max(int(hts[live]) + H1_MS, seen0)
+                        A, a_ts, t_act = fa[0], int(hts[fa[1]]), fa[2]
+                        dup = [q_ for q_, x in enumerate(acs) if x[1] == A]
+                        av = max(int(hts[t_act]) + H1_MS, seen0)
+                        if dup:         # FVG yang sama sudah jadi acuan dari swing sebelumnya: pakai waktu aktif paling awal
+                            q_ = dup[0]; acs[q_] = (min(acs[q_][0], int(np.searchsorted(ts5, av))), A)
+                            continue
+                av = max(int(hts[t_act]) + H1_MS, seen0)
                 acs.append((int(np.searchsorted(ts5, av)), A)); ac_time.setdefault(A, a_ts)
     else:
         for x in LV:
@@ -1172,26 +1246,57 @@ def ns_chain(S, LV, X):
                 # 'bos_swinglow': setelah MSS tunggu BOS M5 (SH2 ditembus SH3, swing 5 kiri-kanan). BOS terbentuk -> LIMIT di swing low antara SH2 & SH3.
                 # Limit dipasang setelah SH3 terkonfirmasi (po), terfill di candle pertama setelahnya yang wick-nya menyentuh harga limit;
                 # batal kalau harga lebih dulu sampai titik BOS H1 / level mati (stop). P tertembus sebelum BOS terbentuk -> MSS gagal, tunggu MSS berikutnya (P baru, swing baru).
-                n_mss = 1
+                # REVISI: limit TIDAK lagi di swing low BOS, tapi di FVG pada pergerakan MSS (c1 >= P, c3 <= candle konfirmasi BOS) yang gap-nya
+                # berada di BAWAH swing low BOS (Long; Short: di ATAS swing high). Beberapa FVG -> yang terdekat dgn swing low BOS.
+                # Tidak ada FVG -> ujung MSS ini dianggap gagal jadi P: tunggu P terbaru menembus P lama, lalu cari MSS -> BOS berikutnya.
+                n_mss = 1; fvg_b = None
                 while True:
                     bs = _ns_find_bos(sup, tj0, q, P, ref, slv, stop, H5, L5)
-                    if bs is None or bs[0] == 'ok':
+                    if bs is None:
                         break
-                    # MSS gagal (P tertembus ekstrem baru sebelum BOS): setup TIDAK hilang, lanjutkan P -> swing -> MSS berikutnya
-                    mss2 = _ns_find_mss(sup, tj0, stop, H5, L5, C5, (bs[1], P, P_last, ref))
+                    if bs[0] == 'ok':
+                        bd0 = bs[1]; swp = float(bd0['entry'])          # harga swing low (Short: swing high) BOS
+                        best = None
+                        for kk in range(P + 2, bd0['conf'] + 1):
+                            if sup:
+                                if bull[kk] and float(L5[kk]) <= swp and (best is None or float(L5[kk]) > best[2]):
+                                    best = (kk, float(H5[kk - 2]), float(L5[kk]))
+                            else:
+                                if bear[kk] and float(H5[kk]) >= swp and (best is None or float(H5[kk]) < best[1]):
+                                    best = (kk, float(H5[kk]), float(L5[kk - 2]))
+                        if best is not None:
+                            fvg_b = best; break
+                        # tidak ada FVG di bawah swing low BOS -> cari candle yg menembus P (ekstrem baru), lalu lanjut MSS berikutnya
+                        s_ = bd0['conf'] + 1
+                        if s_ >= min(stop, n5):
+                            bs = None; break
+                        seg_ = (L5[s_:min(stop, n5)] < L5[P]) if sup else (H5[s_:min(stop, n5)] > H5[P])
+                        if not seg_.any():
+                            bs = None; break
+                        fi_ = s_ + int(seg_.argmax())
+                    else:
+                        fi_ = bs[1]
+                    # MSS gagal (P tertembus ekstrem baru / tanpa FVG): setup TIDAK hilang, lanjutkan P -> swing -> MSS berikutnya
+                    mss2 = _ns_find_mss(sup, tj0, stop, H5, L5, C5, (fi_, P, P_last, ref))
                     if mss2 is None:
                         bs = None; break
                     q, P, ref, P_last = mss2; n_mss += 1
                     slv = (float(L5[P]) * (1 - NS_SL_BUF)) if sup else (float(H5[P]) * (1 + NS_SL_BUF))
-                if bs is not None:
-                    bd = dict(bs[1], n_mss=n_mss); entry = float(bd['entry']); po = bd['conf']
+                if bs is not None and fvg_b is not None:
+                    bd = dict(bs[1], n_mss=n_mss); po = bd['conf']
+                    zl_, zh_ = (fvg_b[1], fvg_b[2]) if sup else (fvg_b[1], fvg_b[2])
+                    if sup:
+                        entry = {'near': zh_, 'mid': (zl_ + zh_) / 2, 'far': zl_}.get(NS_FVG_EDGE, zh_)
+                    else:
+                        entry = {'near': zl_, 'mid': (zl_ + zh_) / 2, 'far': zh_}.get(NS_FVG_EDGE, zl_)
+                    entry = float(entry)
                     ok = (slv < entry < BE) if sup else (BE < entry < slv)
                     e2 = min(stop, n5)
                     if ok and po + 1 < e2:
                         seg = (L5[po + 1:e2] <= entry) if sup else (H5[po + 1:e2] >= entry)
                         if seg.any():
                             bosx = bd
-                            trig = (q, entry, slv, P, ref, po + 1 + int(seg.argmax()), None)
+                            trig = (q, entry, slv, P, ref, po + 1 + int(seg.argmax()), fvg_b)
         if trig is None:
             if no_fvg:
                 status = 'tanpa_fvg'
@@ -2036,12 +2141,12 @@ def _setups_txt() -> bytes:
         b_ = (f"Coin : {r['symbol'].lower()}\nDir : {r['d'].lower()}\nHasil : {hasil}\nLevel : {_fmt_price(r['L'])}\n"
               f"Tanggal level : {_fmt_setup_t(r['c1_ts'])}\nAcuan : {ac}\nP : {p}\nP tanggal : {pt}\n"
               f"Swing : {sw}\nSwing tanggal : {swt}\nMss tanggal : {mt}\n")
-        if lim:     # mode entry limit di FVG: FVG (zona + waktu c1) dan harga limit
+        if lim or bsl:     # mode entry limit di FVG: FVG (zona + waktu c1) dan harga limit
             b_ += f"FVG : {fv}\nFVG tanggal : {fvt}\nEntry : {en}\n"
         if bsl:     # mode BOS M5: SH2, SH3, candle konfirmasi BOS, swing low (= harga limit)
             b_ += (f"MSS ke : {bx['n_mss'] if bx else ''}\n"
                    f"SH2 tanggal : {_fmt_setup_t(bx['sh2_ts']) if bx else ''}\nSH3 tanggal : {_fmt_setup_t(bx['sh3_ts']) if bx else ''}\n"
-                   f"BOS M5 tanggal : {_fmt_setup_t(bx['conf_ts']) if bx else ''}\nSwing low tanggal : {_fmt_setup_t(bx['sl_ts']) if bx else ''}\nEntry (swing low) : {en}\n")
+                   f"BOS M5 tanggal : {_fmt_setup_t(bx['conf_ts']) if bx else ''}\nSwing low tanggal : {_fmt_setup_t(bx['sl_ts']) if bx else ''}\n")
         return b_
     for r in rows:
         trs = r['trades']
