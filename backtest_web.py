@@ -73,6 +73,7 @@ NS_MSS_REF       = os.environ.get('NS_MSS_REF', 'range').strip().lower()   # 'ra
 NS_P_EQUAL       = os.environ.get('NS_P_EQUAL', 'merge').strip().lower()   # P M5, angka sama pada candle berurutan: 'merge' (default: candle yg sama dijadikan SATU KESATUAN: candle sebelum & sesudah kesatuan tidak boleh melebihi/sama, candle sama berikutnya menyambung) | 'invalid' (sama dgn tetangga = P tidak valid) | 'valid' (sama boleh)
 NS_ENTRY_MODE    = os.environ.get('NS_ENTRY_MODE', 'bos_swinglow').strip().lower()   # 'bos_swinglow' (default): setelah MSS tunggu BOS M5 (SH1 ditembus SH2, lalu SH2 ditembus SH3, semua swing 5 kiri-kanan) -> LIMIT di swing low antara SH2 & SH3 (juga 5 kiri-kanan) | 'limit_fvg': limit di FVG terdekat dgn MSS | 'market': entry market di close candle MSS
 NS_FVG_EDGE      = os.environ.get('NS_FVG_EDGE', 'near').strip().lower()     # titik limit di FVG: 'near' (tepi terdekat ke harga sekarang, default) | 'mid' | 'far'
+NS_REQ_MSS_FVG   = os.environ.get('NS_REQ_MSS_FVG', '0').strip() in ('1', 'true', 'True')   # 1 = (mode bos_swinglow) wajib ada FVG di MSS di bawah swing low BOS, kalau tidak ada tunggu MSS lain. 0 (default) = tidak perlu FVG
 NS_MAX_ENTRY     = int(os.environ.get('NS_MAX_ENTRY', 10))           # maksimal entry per BOS (setelah SL boleh entry lagi di acuan lain, sampai batas ini); 0 = tak terbatas
 NS_ACUAN_MODE    = os.environ.get('NS_ACUAN_MODE', 'swing_antara').strip().lower()   # acuan H1: 'swing_antara' (default: Long: P = HIGH valid, swing = LOW terendah di antara 2 P; Short: P = LOW, swing = HIGH; titik acuan = swing, aktif saat P valid confirmed) | 'swing_ditembus' (peran dibalik: Long P = low, swing = high; aktif setelah close H1 menembus swing) | 'level' (cara lama: level baru berFVG)
 NS_H1_P_EXCEED   = os.environ.get('NS_H1_P_EXCEED', '1').strip() not in ('0', 'false', 'False', '')   # 1 (default) = P H1 baru HARUS melebihi P valid sebelumnya (lebih ekstrem, sama persis tidak; P pertama tidak punya swing). 0 = semua ekstrem valid dianggap P, swing pertama dihitung dari candle break-in
@@ -1264,7 +1265,7 @@ def ns_chain(S, LV, X):
                             else:
                                 if bear[kk] and float(H5[kk]) >= swp and (best is None or float(H5[kk]) < best[1]):
                                     best = (kk, float(H5[kk]), float(L5[kk - 2]))
-                        if best is not None:
+                        if best is not None or not NS_REQ_MSS_FVG:
                             fvg_b = best; break
                         # tidak ada FVG di bawah swing low BOS -> cari candle yg menembus P (ekstrem baru), lalu lanjut MSS berikutnya
                         s_ = bd0['conf'] + 1
@@ -1282,9 +1283,11 @@ def ns_chain(S, LV, X):
                         bs = None; break
                     q, P, ref, P_last = mss2; n_mss += 1
                     slv = (float(L5[P]) * (1 - NS_SL_BUF)) if sup else (float(H5[P]) * (1 + NS_SL_BUF))
-                if bs is not None and fvg_b is not None:
+                if bs is not None and (fvg_b is not None or not NS_REQ_MSS_FVG):
                     bd = dict(bs[1], n_mss=n_mss); po = bd['conf']
-                    entry = float(bd['entry'])      # limit tetap di swing low (Short: swing high) BOS; FVG di MSS hanya syarat
+                    # ENTRY limit di SH2 (Long: high SH2; Short: low SH2), SL di swing low BOS (Short: swing high); FVG di MSS tetap syarat
+                    entry = float(H5[bd['sh2']]) if sup else float(L5[bd['sh2']])
+                    slv = (float(L5[bd['sl']]) * (1 - NS_SL_BUF)) if sup else (float(H5[bd['sl']]) * (1 + NS_SL_BUF))
                     ok = (slv < entry < BE) if sup else (BE < entry < slv)
                     e2 = min(stop, n5)
                     if ok and po + 1 < e2:
