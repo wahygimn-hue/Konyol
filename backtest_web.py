@@ -1,6 +1,6 @@
 """
-DEFAULT SEKARANG (tanpa env apa pun): STRATEGY=sentuh_mss, SM_ENTRY=range, SM_RANGE_SWING=1, SM_CANCEL_R=2, SM_EMA=h1 (EMA21/30 H1 saat level tersentuh), SM_C1_BODY=0 (filter body C1 MATI).
-  Matikan filter EMA: SM_EMA=0
+DEFAULT SEKARANG (tanpa env apa pun): STRATEGY=sentuh_mss, SM_ENTRY=range, SM_RANGE_SWING=1, SM_CANCEL_R=2, SM_EMA=h1 (EMA21/30 H1 saat level tersentuh), SM_MSS_EMA=m5 (MSS valid lewat EMA21/30 M5), SM_C1_BODY=0 (filter body C1 MATI).
+  Matikan filter EMA: SM_EMA=0 dan/atau SM_MSS_EMA=0
   Kembali ke entry market BOS: SM_ENTRY=bos SM_CANCEL_R=0 | entry market saat MSS break: SM_ENTRY=mss SM_CANCEL_R=0
 backtest_web.py — STRATEGY=sentuh_mss  (level H1 awal -> SENTUH -> MSS M5 -> konfirmasi BOS M5 -> entry MARKET, TP 1:3)
   Level H1 awal (c1+c2, c3/c4 tidak menembus + FVG, TANPA filter kiri/kanan & tanpa filter tren) -> candle M5 pertama yang menyentuh level
@@ -8,6 +8,7 @@ backtest_web.py — STRATEGY=sentuh_mss  (level H1 awal -> SENTUH -> MSS M5 -> k
   SL = swing low BOS (Short: swing high) + NS_SL_BUF. TP = SM_RR x jarak entry-SL (default 3 = 1:3). Tanpa batas waktu (SM_MAX_HOURS=0);
   setup batal kalau harga sudah sampai titik terjauh (high tertinggi/low terendah dari c1 s/d sentuh) sebelum BOS terkonfirmasi.
   Env: SM_RR=3, SM_MAX_HOURS=0 (0 = tanpa batas; N = MSS+BOS dicari maks N jam setelah sentuh),
+       SM_MSS_EMA=0 (m5 = MSS valid hanya kalau EMA21/30 M5 searah saat MSS terbentuk [Long: EMA21 > EMA30]; kalau belum -> tunggu; ujung MSS tersentuh saat menunggu -> MSS gagal, cari MSS lain; berlaku utk SM_ENTRY=range|mss; range = P s/d candle MSS valid),
        SM_EMA=0 (filter EMA saat level tersentuh: 'h1' atau 'm5' = Support valid kalau EMA21 > EMA30, Resisten valid kalau EMA21 < EMA30 (BIAS_EMA_FAST/SLOW, EMA_WARMUP); 0 = mati),
        SM_ENTRY=bos | mss | range ('range' = di range MSS (dari ujung MSS/P sampai candle MSS break) cari swing high terbaru yg menembus swing high sebelumnya (mirip BOS),
          entry LIMIT di swing low terbaru, SL di ujung MSS (P), TP 1:SM_RR; SM_RANGE_SWING=2 = swing N kiri-kanan di range;
@@ -79,12 +80,13 @@ IFVG_LOOKBACK    = int(os.environ.get('IFVG_LOOKBACK', 48))          # FVG tidak
 
 # --- STRATEGI: 'sentuh_mss' (default) | 'multi_acuan' | 'ifvg_ema' (strategi lama EMA21/30 + IFVG limit + target level lawan) ---
 STRATEGY         = os.environ.get('STRATEGY', 'sentuh_mss').strip().lower()   # 'sentuh_mss' (default) | 'multi_acuan' | 'ifvg_ema'
-SM_RR            = float(os.environ.get('SM_RR', 3))                 # sentuh_mss: TP = SM_RR x jarak entry-SL (3 = 1:3)
+SM_RR            = float(os.environ.get('SM_RR', 4))                 # sentuh_mss: TP = SM_RR x jarak entry-SL (3 = 1:3)
 SM_C1_BODY       = int(os.environ.get('SM_C1_BODY', 0))              # sentuh_mss filter bentuk c1/c2: 0=off | 1=high c2 < open c1 (Support; Resisten: low c2 > open c1) | 2=body c1 > (high c2 - open c2)
 SM_ENTRY         = os.environ.get('SM_ENTRY', 'range').strip().lower()  # sentuh_mss: 'bos' = entry market setelah konfirmasi BOS M5, SL swing low BOS | 'mss' = entry market langsung saat MSS break, SL di ujung MSS (P)
 SM_RANGE_SWING   = int(os.environ.get('SM_RANGE_SWING', 1))           # sentuh_mss SM_ENTRY=range: swing fractal N kiri-kanan di dalam range MSS (P s/d candle MSS break)
-SM_CANCEL_R      = float(os.environ.get('SM_CANCEL_R', 2))           # SM_ENTRY=range: 0 = mati; N = setup gugur kalau harga lari menjauh >= N R (dari limit, searah profit) sebelum limit terfill
+SM_CANCEL_R      = float(os.environ.get('SM_CANCEL_R', 4))           # SM_ENTRY=range: 0 = mati; N = setup gugur kalau harga lari menjauh >= N R (dari limit, searah profit) sebelum limit terfill
 SM_EMA           = os.environ.get('SM_EMA', 'h1').strip().lower()      # sentuh_mss filter EMA saat level tersentuh: 0 = mati | h1 = EMA21/30 dari close H1 | m5 = EMA21/30 dari close M5 (candle terakhir yang sudah closed sebelum candle sentuh)
+SM_MSS_EMA       = os.environ.get('SM_MSS_EMA', 'm5').strip().lower()  # sentuh_mss (SM_ENTRY=range|mss): 'm5' = MSS baru VALID kalau EMA21/30 M5 searah (Long: EMA21>EMA30; Short: EMA21<EMA30); belum searah -> tunggu; ujung MSS (P) tersentuh saat menunggu -> MSS gagal, cari MSS lain | 0 = mati
 SM_MAX_HOURS     = float(os.environ.get('SM_MAX_HOURS', 0))          # sentuh_mss: 0 = tanpa batas waktu; N = MSS+BOS dicari maks N jam setelah level tersentuh
 NS_SWING_EXT     = int(os.environ.get('NS_SWING_EXT', 5))            # titik terjauh harus swing: N candle H1 kiri & kanan tidak melebihi
 NS_LOOKBACK      = int(os.environ.get('NS_LOOKBACK', 100))            # FVG lama boleh dari N candle M5 sebelum acuan tersentuh
@@ -1428,13 +1430,38 @@ def ns_detect_events(df, m5):
 # STRATEGI 'sentuh_mss': level H1 awal -> sentuh -> MSS M5 -> BOS M5 -> entry MARKET, TP = SM_RR x jarak SL
 # ============================================================
 
+def _sm_valid_mss(sup, tj0, stop, H5, L5, C5, ema_a, ema_b, mss, stats):
+    """SM_MSS_EMA=m5: MSS (q, P, ref, P_last) baru VALID di candle M5 pertama (>= q) yang EMA21/30 M5-nya searah (Long: EMA21 > EMA30; Short: kebalikannya).
+    Belum searah -> tunggu. Selama menunggu, kalau ujung MSS (P) tersentuh pergerakan baru (Long: low <= low P; Short: high >= high P) -> MSS gagal, cari MSS lain
+    (dilanjutkan dari candle penyentuh, sama seperti alur MSS gagal biasa), lalu tunggu EMA lagi. Candle yang menyentuh P dinilai gagal lebih dulu (konservatif).
+    Return (idx candle valid, idx candle MSS, P, ref, P_last) / None."""
+    while True:
+        q, P, ref, P_last = mss
+        tv = None; fail = None
+        for t in range(q, stop):
+            if t > q and ((L5[t] <= L5[P]) if sup else (H5[t] >= H5[P])):
+                fail = t; break
+            if t >= EMA_WARMUP and ((ema_a[t] > ema_b[t]) if sup else (ema_a[t] < ema_b[t])):
+                tv = t; break
+        if tv is not None:
+            if tv > q:
+                stats['sm_mssema_tunggu'] += 1
+            return tv, q, P, ref, P_last
+        if fail is None:
+            return None
+        stats['sm_mssema_gagal'] += 1
+        mss = _ns_find_mss(sup, tj0, stop, H5, L5, C5, (fail, P, P_last, ref))
+        if mss is None:
+            return None
+
+
 def sm_detect_events(df, m5):
     """Return (events, stats, setups). 1 entry per level H1 (sentuhan pertama setelah level aktif di akhir c4).
     Setelah sentuh: cari MSS M5, lalu konfirmasi BOS M5 (fungsi _ns_find_mss/_ns_find_bos yang sama dgn strategi lain).
     Entry MARKET di close candle konfirmasi BOS; SL = swing low BOS (Long) / swing high BOS (Short) + NS_SL_BUF;
     TP = entry +/- SM_RR x jarak entry-SL. Batal kalau harga sudah mencapai titik terjauh sebelum konfirmasi BOS."""
     stats = {'levels': 0, 'sm_tanpa_sentuh': 0, 'sm_tersentuh': 0, 'sm_tanpa_mss': 0, 'sm_mss': 0, 'sm_tanpa_bos': 0, 'sm_bos': 0,
-             'sm_sl_invalid': 0, 'sm_c1_dibuang': 0, 'sm_rng_tanpa_swinglow': 0, 'sm_rng_tidak_terfill': 0, 'sm_rng_gugur_jauh': 0, 'sm_ema_ditolak': 0, 'sm_ema_warmup': 0, 'sm_entry': 0, 'sm_TP': 0, 'sm_SL': 0, 'sm_open': 0, 'entry': 0}
+             'sm_sl_invalid': 0, 'sm_c1_dibuang': 0, 'sm_rng_tanpa_swinglow': 0, 'sm_rng_tidak_terfill': 0, 'sm_rng_gugur_jauh': 0, 'sm_ema_ditolak': 0, 'sm_ema_warmup': 0, 'sm_mssema_gagal': 0, 'sm_mssema_tunggu': 0, 'sm_mssema_tanpa_valid': 0, 'sm_entry': 0, 'sm_TP': 0, 'sm_SL': 0, 'sm_open': 0, 'entry': 0}
     events, setups = [], []
     if m5 is None or df is None or len(df) < 30:
         return events, stats, setups
@@ -1457,6 +1484,11 @@ def sm_detect_events(df, m5):
     ts5, H5, L5, C5 = m5['TS'], m5['H'], m5['L'], m5['C']
     n5 = len(ts5); hts = H1['ts']
     win = int(SM_MAX_HOURS * 12) if SM_MAX_HOURS > 0 else 0
+    ema5_a = ema5_b = None
+    if SM_MSS_EMA == 'm5' and SM_ENTRY in ('range', 'mss'):
+        _c5 = pd.Series(C5)
+        ema5_a = _c5.ewm(span=BIAS_EMA_FAST, adjust=False).mean().values
+        ema5_b = _c5.ewm(span=BIAS_EMA_SLOW, adjust=False).mean().values
     ema_a = ema_b = None
     if SM_EMA in ('h1', 'm5'):
         _src = H1['c'] if SM_EMA == 'h1' else C5
@@ -1496,7 +1528,12 @@ def sm_detect_events(df, m5):
         if mss is None:
             stats['sm_tanpa_mss'] += 1; continue
         stats['sm_mss'] += 1
-        q, P, ref, P_last = mss; n_mss = 1; bs = None; ff = None; entry_lim = None
+        q, P, ref, P_last = mss; n_mss = 1; bs = None; ff = None; entry_lim = None; q_orig = q
+        if ema5_a is not None:         # MSS harus VALID lewat EMA21/30 M5 dulu (tunggu / gagal -> MSS lain); range = P s/d candle MSS valid
+            gv = _sm_valid_mss(sup, tj0, stop, H5, L5, C5, ema5_a, ema5_b, mss, stats)
+            if gv is None:
+                stats['sm_mssema_tanpa_valid'] += 1; continue
+            q, q_orig, P, ref, P_last = gv
         if SM_ENTRY == 'range':        # struktur mirip BOS di range MSS (P..q); entry LIMIT di swing low terbaru; SL di ujung MSS (P)
             Nr = SM_RANGE_SWING
             ah, al = (H5, L5) if sup else (L5, H5)
@@ -1577,15 +1614,15 @@ def sm_detect_events(df, m5):
             'kind': kind, 'type': lv['ty'], 'level': lvl, 'direction': d,
             'entry_price': entry, 'sl_price': slv,
             'fill_ts': fill_ts,
-            'test1_ts': int(ts5[tj0]), 'test2_ts': int(ts5[q]), 'c1_ts': int(hts[c1]),
+            'test1_ts': int(ts5[tj0]), 'test2_ts': int(ts5[q_orig]), 'c1_ts': int(hts[c1]),
             'targets': [], 'tp_fixed': tp, 'tp_on_fill': False,
-            'meta': {'ext': BE, 'tp': tp, 'bos_ts': int(ts5[po]), 'mss_ts': int(ts5[q]), 'n_mss': n_mss, 'seq': 1},
+            'meta': {'ext': BE, 'tp': tp, 'bos_ts': int(ts5[po]), 'mss_ts': int(ts5[q_orig]), 'n_mss': n_mss, 'seq': 1},
         })
         setups.append({
             'd': d, 'L': lvl, 'c1_ts': int(hts[c1]), 'touch_ts': int(ts5[tj0]), 'ext': BE,
             'p': float(L5[P] if sup else H5[P]), 'p_ts': int(ts5[P]),
             'sw': float(H5[ref] if sup else L5[ref]), 'sw_ts': int(ts5[ref]),
-            'mss_ts': int(ts5[q]), 'n_mss': n_mss,
+            'mss_ts': int(ts5[q_orig]), 'valid_ts': int(ts5[q]), 'n_mss': n_mss,
             'sh2_ts': (int(ts5[bd['sh2']]) if bd['sh2'] is not None else None), 'sh3_ts': (int(ts5[bd['sh3']]) if bd['sh3'] is not None else None),
             'swl_ts': (int(ts5[bd['sl']]) if SM_ENTRY == 'bos' else (int(ts5[bd['swl']]) if SM_ENTRY == 'range' else None)), 'conf_ts': int(ts5[po]),
             'mode': SM_ENTRY, 'fill_ts': fill_ts,
@@ -1971,6 +2008,8 @@ def _run():
                       f"Exit: TARGET = wick level lawan terbaru yang belum tersentuh (H1+FVG, tanpa EMA); SL dicek duluan.")
         elif STRATEGY == 'sentuh_mss':
             _log_msg(f"🚀 Mulai backtest SENTUH->MSS (level H1 awal -> sentuh -> MSS M5 -> BOS M5 -> entry MARKET, TP 1:{SM_RR:g}) — {len(SYMBOLS)} koin, {BACKTEST_START_DATE} s/d {BACKTEST_END_DATE}")
+            if SM_MSS_EMA == 'm5' and SM_ENTRY in ('range', 'mss'):
+                _log_msg(f"   📈 MSS harus VALID lewat EMA{BIAS_EMA_FAST}/{BIAS_EMA_SLOW} M5 (Long: EMA{BIAS_EMA_FAST} > EMA{BIAS_EMA_SLOW}; Short: kebalikannya); belum searah -> tunggu; ujung MSS tersentuh saat menunggu -> MSS gagal, cari MSS lain.")
             if SM_EMA in ('h1', 'm5'):
                 _log_msg(f"   📈 Filter EMA{BIAS_EMA_FAST}/{BIAS_EMA_SLOW} ({SM_EMA.upper()}) saat level tersentuh: Support valid kalau EMA{BIAS_EMA_FAST} > EMA{BIAS_EMA_SLOW}, Resisten valid kalau EMA{BIAS_EMA_FAST} < EMA{BIAS_EMA_SLOW}; warm-up {EMA_WARMUP} candle.")
             if SM_ENTRY == 'range':
@@ -2062,7 +2101,7 @@ SL = swing low BOS +{NS_SL_BUF*100:.2f}%, TP = {SM_RR:g} x jarak SL, {'tanpa bat
                                                       'tanpa_acuan', 'tanpa_fvg', 'maks_entry', 'level_ditembus_lagi', 'bos_selesai', 'selesai_TP',
                                                       'gugur_ke_titik_BOS', 'pending', 'terbuka', 'entry',
                                                       'sm_tanpa_sentuh', 'sm_tersentuh', 'sm_tanpa_mss', 'sm_mss', 'sm_tanpa_bos', 'sm_bos',
-                                                      'sm_sl_invalid', 'sm_c1_dibuang', 'sm_rng_tanpa_swinglow', 'sm_rng_tidak_terfill', 'sm_rng_gugur_jauh', 'sm_ema_ditolak', 'sm_ema_warmup', 'sm_entry', 'sm_TP', 'sm_SL', 'sm_open')})
+                                                      'sm_sl_invalid', 'sm_c1_dibuang', 'sm_rng_tanpa_swinglow', 'sm_rng_tidak_terfill', 'sm_rng_gugur_jauh', 'sm_ema_ditolak', 'sm_ema_warmup', 'sm_mssema_gagal', 'sm_mssema_tunggu', 'sm_mssema_tanpa_valid', 'sm_entry', 'sm_TP', 'sm_SL', 'sm_open')})
             monthly_rows, avg_growth = monthly_breakdown(result['trades'], INITIAL_BALANCE)
             _monthly_results[:] = monthly_rows
             _avg_monthly_growth = avg_growth
@@ -2134,6 +2173,7 @@ def _render_html() -> bytes:
     <br>• <b>Sentuh</b>: candle M5 pertama setelah level aktif yang wick-nya menyentuh level. Langsung cari <b>MSS</b> M5 (close menembus swing {NS_MSS_SWING} kiri-kanan antara P lama &amp; P baru;
     P valid {NS_P_SWING} kiri-kanan, dari {NS_LOOKBACK} candle M5 sebelum sentuh), lalu <b>konfirmasi BOS</b> M5 (SH1 ditembus SH2, SH2 ditembus SH3; MSS gagal &rarr; tunggu MSS lain).
     <br>• <b>Entry MARKET</b> di close candle konfirmasi BOS. <b>SL</b> = swing low BOS (Short: swing high) +{NS_SL_BUF*100:.2f}%. <b>TP</b> = {SM_RR:g} x jarak entry-SL (1:{SM_RR:g}).
+    {('<br>• <b>MSS valid lewat EMA' + str(BIAS_EMA_FAST) + '/' + str(BIAS_EMA_SLOW) + ' M5 AKTIF</b>: MSS baru valid kalau EMA searah (Long: EMA' + str(BIAS_EMA_FAST) + ' &gt; EMA' + str(BIAS_EMA_SLOW) + '); belum searah -> tunggu; ujung MSS tersentuh saat menunggu -> MSS gagal, cari MSS lain. MSS yang sempat menunggu: ' + str(ns.get('sm_mssema_tunggu', 0)) + ', MSS gagal saat menunggu: ' + str(ns.get('sm_mssema_gagal', 0)) + ', tanpa MSS valid: ' + str(ns.get('sm_mssema_tanpa_valid', 0)) + '.') if (SM_MSS_EMA == 'm5' and SM_ENTRY in ('range', 'mss')) else ''}
     {('<br>• <b>Filter EMA' + str(BIAS_EMA_FAST) + '/' + str(BIAS_EMA_SLOW) + ' (' + SM_EMA.upper() + ') AKTIF</b> saat level tersentuh: Support valid kalau EMA' + str(BIAS_EMA_FAST) + ' &gt; EMA' + str(BIAS_EMA_SLOW) + ', Resisten valid kalau EMA' + str(BIAS_EMA_FAST) + ' &lt; EMA' + str(BIAS_EMA_SLOW) + '; ditolak: ' + str(ns.get('sm_ema_ditolak', 0)) + ', warm-up: ' + str(ns.get('sm_ema_warmup', 0)) + '.') if SM_EMA in ('h1', 'm5') else ''}
     {('<br>• <b>MODE SM_ENTRY=range</b>: di range MSS (dari ujung MSS/P sampai candle MSS break) cari swing high terbaru yang menembus swing high sebelumnya (swing ' + str(SM_RANGE_SWING) + ' kiri-kanan); entry LIMIT di swing low terbaru, SL di ujung MSS (P), TP 1:' + format(SM_RR, 'g') + f'. Tanpa struktur: {ns.get("sm_tanpa_bos",0)}, tanpa swing low: {ns.get("sm_rng_tanpa_swinglow",0)}, limit tidak terfill: {ns.get("sm_rng_tidak_terfill",0)}' + (', gugur karena harga lari >= ' + format(SM_CANCEL_R, 'g') + 'R: ' + str(ns.get("sm_rng_gugur_jauh",0)) if SM_CANCEL_R > 0 else '') + '.') if SM_ENTRY == 'range' else ''}
     {('<br>• <b>MODE SM_ENTRY=mss</b>: tanpa tunggu BOS — entry market langsung di close candle MSS break, SL di ujung MSS (P), TP tetap 1:' + format(SM_RR, 'g') + '.') if SM_ENTRY == 'mss' else ''}
@@ -2387,15 +2427,16 @@ def _setups_txt_sm() -> bytes:
     for r in rows:
         dist = abs(r['entry'] - r['sl'])
         hasil = 'SL -1.0' if r['why'] == 'SL' else (f"TP {abs(r['tp'] - r['entry']) / dist if dist > 0 else 0.0:+.1f}" if r['why'] == 'TP' else 'Open')
+        vl = (f"MSS valid (EMA M5) tanggal : {_fmt_setup_t(r['valid_ts'])}\n" if r.get('valid_ts') and r['valid_ts'] != r['mss_ts'] else '')
         out.append(
             f"Coin : {r['symbol'].lower()}\nDir : {r['d'].lower()}\nHasil : {hasil}\nLevel : {_fmt_price(r['L'])}\n"
             f"Tanggal level : {_fmt_setup_t(r['c1_ts'])}\nSentuh level : {_fmt_setup_t(r['touch_ts'])}\n"
             f"Terjauh (batal kalau tercapai) : {_fmt_price(r['ext'])}\n"
             f"P : {_fmt_price(r['p'])}\nP tanggal : {_fmt_setup_t(r['p_ts'])}\n"
             f"Swing : {_fmt_price(r['sw'])}\nSwing tanggal : {_fmt_setup_t(r['sw_ts'])}\n"
-            + (f"Mss tanggal : {_fmt_setup_t(r['mss_ts'])}\nMSS ke : {r['n_mss']}\nSwing ditembus (SH A) tanggal : {_fmt_setup_t(r['sh2_ts'])}\nSwing terbaru (SH B) tanggal : {_fmt_setup_t(r['sh3_ts'])}\n"
+            + (f"Mss tanggal : {_fmt_setup_t(r['mss_ts'])}\nMSS ke : {r['n_mss']}\n{vl}Swing ditembus (SH A) tanggal : {_fmt_setup_t(r['sh2_ts'])}\nSwing terbaru (SH B) tanggal : {_fmt_setup_t(r['sh3_ts'])}\n"
                f"Swing low terbaru (entry limit) tanggal : {_fmt_setup_t(r['swl_ts'])}\nLimit terfill tanggal : {_fmt_setup_t(r['fill_ts'])}\n" if r.get('mode') == 'range' else
-               f"Mss tanggal (entry market) : {_fmt_setup_t(r['mss_ts'])}\nMSS ke : {r['n_mss']}\n" if r['sh2_ts'] is None else
+               f"Mss tanggal (entry market) : {_fmt_setup_t(r['mss_ts'])}\nMSS ke : {r['n_mss']}\n{vl}" if r['sh2_ts'] is None else
                f"Mss tanggal : {_fmt_setup_t(r['mss_ts'])}\nMSS ke : {r['n_mss']}\nSH2 tanggal : {_fmt_setup_t(r['sh2_ts'])}\nSH3 tanggal : {_fmt_setup_t(r['sh3_ts'])}\n"
                f"Swing low tanggal : {_fmt_setup_t(r['swl_ts'])}\nBOS M5 tanggal (entry market) : {_fmt_setup_t(r['conf_ts'])}\n") +
 
