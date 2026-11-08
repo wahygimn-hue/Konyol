@@ -80,11 +80,11 @@ IFVG_LOOKBACK    = int(os.environ.get('IFVG_LOOKBACK', 48))          # FVG tidak
 
 # --- STRATEGI: 'sentuh_mss' (default) | 'multi_acuan' | 'ifvg_ema' (strategi lama EMA21/30 + IFVG limit + target level lawan) ---
 STRATEGY         = os.environ.get('STRATEGY', 'sentuh_mss').strip().lower()   # 'sentuh_mss' (default) | 'multi_acuan' | 'ifvg_ema'
-SM_RR            = float(os.environ.get('SM_RR', 4))                 # sentuh_mss: TP = SM_RR x jarak entry-SL (3 = 1:3)
+SM_RR            = float(os.environ.get('SM_RR', 2))                 # sentuh_mss: TP = SM_RR x jarak entry-SL (3 = 1:3)
 SM_C1_BODY       = int(os.environ.get('SM_C1_BODY', 0))              # sentuh_mss filter bentuk c1/c2: 0=off | 1=high c2 < open c1 (Support; Resisten: low c2 > open c1) | 2=body c1 > (high c2 - open c2)
 SM_ENTRY         = os.environ.get('SM_ENTRY', 'range').strip().lower()  # sentuh_mss: 'bos' = entry market setelah konfirmasi BOS M5, SL swing low BOS | 'mss' = entry market langsung saat MSS break, SL di ujung MSS (P)
 SM_RANGE_SWING   = int(os.environ.get('SM_RANGE_SWING', 1))           # sentuh_mss SM_ENTRY=range: swing fractal N kiri-kanan di dalam range MSS (P s/d candle MSS break)
-SM_CANCEL_R      = float(os.environ.get('SM_CANCEL_R', 4))           # SM_ENTRY=range: 0 = mati; N = setup gugur kalau harga lari menjauh >= N R (dari limit, searah profit) sebelum limit terfill
+SM_CANCEL_R      = float(os.environ.get('SM_CANCEL_R', 3))           # SM_ENTRY=range: 0 = mati; N = setup gugur kalau harga lari menjauh >= N R (dari limit, searah profit) sebelum limit terfill
 SM_EMA           = os.environ.get('SM_EMA', 'h1').strip().lower()      # sentuh_mss filter EMA saat level tersentuh: 0 = mati | h1 = EMA21/30 dari close H1 | m5 = EMA21/30 dari close M5 (candle terakhir yang sudah closed sebelum candle sentuh)
 SM_MSS_EMA       = os.environ.get('SM_MSS_EMA', 'm5').strip().lower()  # sentuh_mss (SM_ENTRY=range|mss): 'm5' = MSS baru VALID kalau EMA21/30 M5 searah (Long: EMA21>EMA30; Short: EMA21<EMA30); belum searah -> tunggu; ujung MSS (P) tersentuh saat menunggu -> MSS gagal, cari MSS lain | 0 = mati
 SM_MAX_HOURS     = float(os.environ.get('SM_MAX_HOURS', 0))          # sentuh_mss: 0 = tanpa batas waktu; N = MSS+BOS dicari maks N jam setelah level tersentuh
