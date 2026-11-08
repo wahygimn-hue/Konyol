@@ -1,5 +1,10 @@
 """
-backtest_web.py -- STRATEGI: acuan_mss (level awal H1 -> break-out -> MSS pertama jadi acuan -> acuan tersentuh -> MSS kedua -> entry)
+backtest_web.py -- STRATEGI: acuan_mss
+MODE (env NS_MODE):
+  touch (DEFAULT)  : level awal H1 langsung jadi ACUAN. Level tersentuh di M5 (Long: low <= level, Short: high >= level) -> langsung cari MSS M5
+                     -> entry MARKET di close candle MSS, SL ujung MSS, TP 1:RR. Tanpa break-out.
+  breakout_acuan   : level tertembus body H1 (break-out) -> MSS pertama (ujungnya jadi acuan) -> acuan tersentuh -> MSS kedua -> entry.
+Keterangan alur di bawah menjelaskan mode breakout_acuan; mode touch memakai langkah 1 lalu loncat ke langkah 4 (sentuh level) dan 5-6.
 
 ALUR (Long; Short = cermin)
 1) LEVEL AWAL H1 (tanpa FVG, tanpa EMA): c1 bearish lalu c2 bullish, level = ujung wick terendah c1/c2.
@@ -49,7 +54,7 @@ RR               = float(os.environ.get('RR', '3'))
 LEVERAGE         = float(os.environ.get('LEVERAGE', '50'))
 MARGIN_USAGE_CAP = float(os.environ.get('MARGIN_USAGE_CAP', '0.90'))
 _mc = os.environ.get('MAX_CONCURRENT', '').strip().lower()
-MAX_CONCURRENT   = float('inf') if _mc in ('', '10', 'unlimited', 'inf') else int(_mc)
+MAX_CONCURRENT   = float('inf') if _mc in ('', '0', 'unlimited', 'inf') else int(_mc)
 
 NS_MSS_SWING = int(os.environ.get('NS_MSS_SWING', 1))      # swing fractal M5: N candle kiri & kanan
 NS_P_SWING   = int(os.environ.get('NS_P_SWING', 1))        # P valid M5: N candle kiri & kanan tidak melampaui P
@@ -57,6 +62,7 @@ NS_LOOKBACK  = int(os.environ.get('NS_LOOKBACK', 100))     # swing boleh dari N 
 NS_SW_EQUAL  = os.environ.get('NS_SW_EQUAL', 'merge').strip().lower()
 NS_P_EQUAL   = os.environ.get('NS_P_EQUAL', 'merge').strip().lower()
 NS_MSS_REF   = os.environ.get('NS_MSS_REF', 'range').strip().lower()
+NS_MODE      = os.environ.get('NS_MODE', 'touch').strip().lower()      # touch (default) = level tersentuh M5 -> MSS | breakout_acuan = break-out -> MSS1 jadi acuan -> MSS2
 NS_LV_N      = int(os.environ.get('NS_LV_N', 5))                  # filter level: ujung wick terpanjang c1/c2 -> N candle kiri & kanan tidak melebihi (0 = matikan)
 NS_LV_EQUAL  = os.environ.get('NS_LV_EQUAL', 'valid').strip().lower()  # valid = angka sama TIDAK dianggap melebihi | invalid = angka sama ditolak
 
@@ -391,36 +397,54 @@ def process_coin(symbol, m5df):
                     continue
                 start = m + NS_LV_N + 1        # level baru pasti setelah N candle kanan close
             st['level_valid'] += 1
-            seg = c[start:]
-            hit = np.flatnonzero(seg < lvl) if sup else np.flatnonzero(seg > lvl)
-            if len(hit) == 0:
-                continue
-            k = start + int(hit[0]); st['breakout'] += 1
-            tj0 = int(np.searchsorted(TS5, ts[k] + H1_MS)) - 1        # candle M5 terakhir di dalam candle break-out
-            if tj0 < 0 or tj0 + 2 >= n5:
-                continue
-            key1 = (sup, tj0)
-            if key1 not in r1_cache:
-                r1_cache[key1] = _ns_find_mss(sup, tj0, n5, H5, L5, C5)
-            r1 = r1_cache[key1]
-            if r1 is None:
-                st['no_mss1'] += 1; continue
-            st['mss1'] += 1
-            t1, P1 = r1[0], r1[1]
-            acuan = float(L5[P1] if sup else H5[P1])
-            key2 = (sup, t1, P1)
-            if key2 not in r2_cache:
-                rest = (L5[t1 + 1:] <= acuan) if sup else (H5[t1 + 1:] >= acuan)
+            k = None; t1 = None; acuan = float(lvl)
+            if NS_MODE == 'touch':
+                # level langsung jadi acuan: tersentuh di M5 -> langsung cari MSS -> entry
+                if start >= n:
+                    continue
+                js = int(np.searchsorted(TS5, ts[start]))             # M5 pertama setelah level terkonfirmasi
+                rest = (L5[js:] <= lvl) if sup else (H5[js:] >= lvl)
                 tt = np.flatnonzero(rest)
                 if len(tt) == 0:
-                    r2_cache[key2] = ('no_touch', None, None)
-                else:
-                    jt = t1 + 1 + int(tt[0])
-                    r2_cache[key2] = ('ok', jt, _ns_find_mss(sup, jt, n5, H5, L5, C5) if jt + 2 < n5 else None)
-            tag, jt, r2 = r2_cache[key2]
-            if tag == 'no_touch':
-                st['no_touch'] += 1; continue
-            st['touch'] += 1
+                    st['no_touch'] += 1; continue
+                jt = js + int(tt[0]); st['touch'] += 1
+                if jt + 2 >= n5:
+                    continue
+                keyt = ('t', sup, jt)
+                if keyt not in r2_cache:
+                    r2_cache[keyt] = _ns_find_mss(sup, jt, n5, H5, L5, C5)
+                r2 = r2_cache[keyt]
+            else:
+                seg = c[start:]
+                hit = np.flatnonzero(seg < lvl) if sup else np.flatnonzero(seg > lvl)
+                if len(hit) == 0:
+                    continue
+                k = start + int(hit[0]); st['breakout'] += 1
+                tj0 = int(np.searchsorted(TS5, ts[k] + H1_MS)) - 1        # candle M5 terakhir di dalam candle break-out
+                if tj0 < 0 or tj0 + 2 >= n5:
+                    continue
+                key1 = (sup, tj0)
+                if key1 not in r1_cache:
+                    r1_cache[key1] = _ns_find_mss(sup, tj0, n5, H5, L5, C5)
+                r1 = r1_cache[key1]
+                if r1 is None:
+                    st['no_mss1'] += 1; continue
+                st['mss1'] += 1
+                t1, P1 = r1[0], r1[1]
+                acuan = float(L5[P1] if sup else H5[P1])
+                key2 = (sup, t1, P1)
+                if key2 not in r2_cache:
+                    rest = (L5[t1 + 1:] <= acuan) if sup else (H5[t1 + 1:] >= acuan)
+                    tt = np.flatnonzero(rest)
+                    if len(tt) == 0:
+                        r2_cache[key2] = ('no_touch', None, None)
+                    else:
+                        jt = t1 + 1 + int(tt[0])
+                        r2_cache[key2] = ('ok', jt, _ns_find_mss(sup, jt, n5, H5, L5, C5) if jt + 2 < n5 else None)
+                tag, jt, r2 = r2_cache[key2]
+                if tag == 'no_touch':
+                    st['no_touch'] += 1; continue
+                st['touch'] += 1
             if r2 is None:
                 st['no_mss2'] += 1; continue
             t, P = r2[0], r2[1]
@@ -431,7 +455,7 @@ def process_coin(symbol, m5df):
             tp = entry + RR * dist if sup else entry - RR * dist
             st['signal'] += 1
             cands.append(dict(symbol=symbol, sup=sup, d='Long' if sup else 'Short', lvl=float(lvl), formed=int(ts[i + 1]),
-                              bo=int(ts[k]), mss1=int(TS5[t1]), acuan=acuan, touch=int(TS5[jt]), mss=int(TS5[t]),
+                              bo=(int(ts[k]) if k is not None else None), mss1=(int(TS5[t1]) if t1 is not None else None), acuan=acuan, touch=int(TS5[jt]), mss=int(TS5[t]),
                               ptime=int(TS5[P]), entry=entry, sl=sl, tp=tp, dist=dist, t=t, entry_ts=int(TS5[t])))
     cands.sort(key=lambda x: (x['t'], x['lvl']))
     seen = set(); uniq = []
@@ -526,8 +550,10 @@ def _run():
     global _phase, _trades, _summary, _funnel, _monthly, _avg_monthly_growth, _per_symbol
     try:
         _log_msg(f"🚀 Backtest acuan_mss — {len(SYMBOLS)} koin, {BACKTEST_START_DATE} s/d {BACKTEST_END_DATE}")
-        _log_msg(f"   Level awal H1 (tanpa FVG, filter ujung wick {NS_LV_N} kiri-kanan) -> break-out body -> MSS pertama (acuan) -> acuan tersentuh -> MSS kedua -> entry MARKET, "
-                 f"SL ujung MSS kedua, TP 1:{RR:g}. Risk {RISK_PCT*100:.1f}%/trade, leverage {LEVERAGE:g}x, slot {'tanpa batas' if MAX_CONCURRENT == float('inf') else int(MAX_CONCURRENT)}.")
+        alur = ("level = acuan -> tersentuh M5 -> MSS -> entry MARKET, SL ujung MSS" if NS_MODE == 'touch' else
+                "break-out body -> MSS pertama (acuan) -> acuan tersentuh -> MSS kedua -> entry MARKET, SL ujung MSS kedua")
+        _log_msg(f"   Mode {NS_MODE}: level awal H1 (tanpa FVG, filter ujung wick {NS_LV_N} kiri-kanan) -> {alur}, TP 1:{RR:g}. "
+                 f"Risk {RISK_PCT*100:.1f}%/trade, leverage {LEVERAGE:g}x, slot {'tanpa batas' if MAX_CONCURRENT == float('inf') else int(MAX_CONCURRENT)}.")
         all_c = []; tot = {}
         for symbol in SYMBOLS:
             _log_msg(f"📊 {symbol}: fetch M5...")
@@ -538,8 +564,8 @@ def _run():
             all_c.extend(cands)
             for k, v in st.items():
                 tot[k] = tot.get(k, 0) + v
-            _log_msg(f"   ✅ {symbol}: {len(df):,} candle M5, {st['level']} level ({st['level_valid']} lolos filter), {st['breakout']} break-out, MSS1 {st['mss1']}, "
-                     f"acuan tersentuh {st['touch']}, sinyal {st['signal']} (kembar {st['dup']}) -> {len(cands)} kandidat entry.")
+            _log_msg(f"   ✅ {symbol}: {len(df):,} candle M5, {st['level']} level ({st['level_valid']} lolos filter), break-out {st['breakout']}, MSS1 {st['mss1']}, "
+                     f"tersentuh {st['touch']}, sinyal {st['signal']} (kembar {st['dup']}) -> {len(cands)} kandidat entry.")
         _log_msg(f"🧮 Simulasi gabungan ({len(all_c)} kandidat)...")
         trades, summ, bl = simulate(all_c)
         monthly, avg = monthly_breakdown(trades)
@@ -568,10 +594,14 @@ def _trades_txt():
         return ('Belum ada trade (backtest masih berjalan atau tidak ada sinyal).\n' if phase != 'done' else 'Tidak ada trade.\n').encode('utf-8')
     out = []
     for k, tr in enumerate(trades, 1):
-        out += [f"Trade : {k}", f"Coin : {tr['symbol']}", f"Dir : {tr['d']}", f"Hasil : {tr['why']} {tr['r']:+.2f}R",
-                f"Level : {tr['lvl']:.8g}", f"Level terbentuk : {_wib(tr['formed'])}", f"Break-out H1 : {_wib(tr['bo'])}",
-                f"MSS pertama : {_wib(tr['mss1'])}", f"Acuan : {tr['acuan']:.8g}", f"Acuan tersentuh : {_wib(tr['touch'])}",
-                f"P MSS kedua : {_wib(tr['ptime'])}", f"MSS kedua (entry) : {_wib(tr['mss'])}",
+        if tr['bo'] is None:
+            mid = [f"Level (acuan) : {tr['acuan']:.8g}", f"Level terbentuk : {_wib(tr['formed'])}", f"Level tersentuh M5 : {_wib(tr['touch'])}",
+                   f"P MSS (ujung MSS) : {_wib(tr['ptime'])}", f"MSS (entry) : {_wib(tr['mss'])}"]
+        else:
+            mid = [f"Level : {tr['lvl']:.8g}", f"Level terbentuk : {_wib(tr['formed'])}", f"Break-out H1 : {_wib(tr['bo'])}",
+                   f"MSS pertama : {_wib(tr['mss1'])}", f"Acuan : {tr['acuan']:.8g}", f"Acuan tersentuh : {_wib(tr['touch'])}",
+                   f"P MSS kedua : {_wib(tr['ptime'])}", f"MSS kedua (entry) : {_wib(tr['mss'])}"]
+        out += [f"Trade : {k}", f"Coin : {tr['symbol']}", f"Dir : {tr['d']}", f"Hasil : {tr['why']} {tr['r']:+.2f}R"] + mid + [
                 f"Entry : {tr['entry']:.8g}", f"SL : {tr['sl']:.8g}", f"TP : {tr['tp']:.8g}",
                 f"Exit waktu : {_wib(tr['exit_ts'])}", f"Balance setelah : ${tr['bal_after']:.2f}", ""]
     return '\n'.join(out).encode('utf-8')
@@ -587,9 +617,12 @@ def _ringkasan_txt():
          f"Total R : {s['total_r']:.2f}", f"Rata-rata R : {s['avg_r']:.2f}", f"Balance awal : ${INITIAL_BALANCE:.2f}",
          f"Balance akhir : ${s['final_balance']:.2f}", f"ROI : {s['roi']:+.1f}%", f"Max drawdown : {s['mdd']:.1f}%",
          f"Rata-rata growth per bulan : {avg:+.2f}%", "", "FUNNEL",
-         f"Level H1 awal (pola c1/c2) : {f.get('level',0)}", f"Level lolos filter 5 kiri-kanan : {f.get('level_valid',0)}", f"Break-out : {f.get('breakout',0)}", f"Tanpa MSS pertama : {f.get('no_mss1',0)}",
+         f"Level H1 awal (pola c1/c2) : {f.get('level',0)}", f"Level lolos filter {NS_LV_N} kiri-kanan : {f.get('level_valid',0)}"] + (
+        [f"Level tersentuh M5 : {f.get('touch',0)}", f"Level tak pernah tersentuh : {f.get('no_touch',0)}",
+         f"Tanpa MSS setelah tersentuh : {f.get('no_mss2',0)}", f"Sinyal entry (MSS) : {f.get('signal',0)}"] if NS_MODE == 'touch' else
+        [f"Break-out : {f.get('breakout',0)}", f"Tanpa MSS pertama : {f.get('no_mss1',0)}",
          f"MSS pertama (acuan) : {f.get('mss1',0)}", f"Acuan tak pernah tersentuh : {f.get('no_touch',0)}",
-         f"Acuan tersentuh : {f.get('touch',0)}", f"Tanpa MSS kedua : {f.get('no_mss2',0)}", f"Sinyal entry (MSS kedua) : {f.get('signal',0)}",
+         f"Acuan tersentuh : {f.get('touch',0)}", f"Tanpa MSS kedua : {f.get('no_mss2',0)}", f"Sinyal entry (MSS kedua) : {f.get('signal',0)}"]) + [
          f"Sinyal kembar dilewati : {f.get('dup',0)}", f"Dilewati posisi searah masih terbuka : {f.get('open_same',0)}",
          f"Dilewati batas slot : {f.get('slot',0)}", f"Dilewati margin kurang : {f.get('margin',0)}",
          f"Posisi belum selesai di akhir data : {f.get('terbuka',0)}", "", "PER BULAN (basis waktu exit, WIB)"]
@@ -611,9 +644,11 @@ def _render_html():
         ps = list(_per_symbol); log_cp = list(_log[-200:])
     refresh = '<meta http-equiv="refresh" content="8">' if phase == 'running' else ''
     st_txt = {'running': '⏳ Berjalan...', 'done': '✅ Selesai', 'error': '❌ Error (lihat log)'}.get(phase, phase)
-    body = [f"<h2>Backtest acuan_mss</h2><p>{st_txt} — {len(SYMBOLS)} koin, {BACKTEST_START_DATE} s/d {BACKTEST_END_DATE}</p>",
-            f"<div class='note'>Level awal H1 (tanpa FVG, ujung wick {NS_LV_N} kiri-kanan) → break-out body → <b>MSS pertama</b> (ujungnya jadi acuan) → acuan tersentuh → "
-            f"<b>MSS kedua</b> → entry market, SL ujung MSS kedua, TP 1:{RR:g}. Risk {RISK_PCT*100:.1f}%/trade (compounding), leverage {LEVERAGE:g}x.</div>"]
+    body = [f"<h2>Backtest acuan_mss</h2><p>{st_txt} — {len(SYMBOLS)} koin, {BACKTEST_START_DATE} s/d {BACKTEST_END_DATE}</p>"
+            + (f"<div class='note'>Level awal H1 (tanpa FVG, ujung wick {NS_LV_N} kiri-kanan) = <b>acuan</b> → tersentuh di M5 → langsung cari <b>MSS</b> → entry market, SL ujung MSS, TP 1:{RR:g}. "
+               if NS_MODE == 'touch' else
+               f"<div class='note'>Level awal H1 (tanpa FVG, ujung wick {NS_LV_N} kiri-kanan) → break-out body → <b>MSS pertama</b> (ujungnya jadi acuan) → acuan tersentuh → <b>MSS kedua</b> → entry market, SL ujung MSS kedua, TP 1:{RR:g}. ")
+            + f"Risk {RISK_PCT*100:.1f}%/trade (compounding), leverage {LEVERAGE:g}x.</div>"]
     if phase == 'done' and s:
         cls = 'pos' if s['total_r'] >= 0 else 'neg'
         body.append(f"<div class='cards'><div class='c'><span>Trade</span><b>{s['n_trades']}</b></div>"
@@ -623,9 +658,13 @@ def _render_html():
                     f"<div class='c'><span>Balance</span><b>${s['final_balance']:.2f}</b></div>"
                     f"<div class='c'><span>Max DD</span><b>{s['mdd']:.1f}%</b></div></div>")
         body.append("<p><a href='/trades.txt'>📄 trades.txt</a> &nbsp; <a href='/ringkasan.txt'>📄 ringkasan.txt</a> &nbsp; <a href='/logs'>📜 logs</a></p>")
-        body.append("<h3>Funnel</h3><p class='small'>"
-                    f"Level {f.get('level',0)} → lolos filter {f.get('level_valid',0)} → break-out {f.get('breakout',0)} → MSS pertama {f.get('mss1',0)} → acuan tersentuh {f.get('touch',0)} → "
-                    f"sinyal MSS kedua {f.get('signal',0)} (kembar {f.get('dup',0)}, posisi searah terbuka {f.get('open_same',0)}, slot {f.get('slot',0)}, margin {f.get('margin',0)}).</p>")
+        if NS_MODE == 'touch':
+            chain = f"Level {f.get('level',0)} → lolos filter {f.get('level_valid',0)} → tersentuh M5 {f.get('touch',0)} → sinyal MSS {f.get('signal',0)}"
+        else:
+            chain = (f"Level {f.get('level',0)} → lolos filter {f.get('level_valid',0)} → break-out {f.get('breakout',0)} → MSS pertama {f.get('mss1',0)} → "
+                     f"acuan tersentuh {f.get('touch',0)} → sinyal MSS kedua {f.get('signal',0)}")
+        body.append("<h3>Funnel</h3><p class='small'>" + chain +
+                    f" (kembar {f.get('dup',0)}, posisi searah terbuka {f.get('open_same',0)}, slot {f.get('slot',0)}, margin {f.get('margin',0)}).</p>")
         body.append(f"<h3>Pertumbuhan per Bulan <small>(rata-rata {avg:+.2f}%/bulan)</small></h3><table><tr><th>Bulan</th><th>Trade</th><th>WR</th><th>R</th><th>Awal</th><th>Akhir</th><th>Growth</th></tr>")
         for m in mo:
             c_ = 'pos' if m['profit'] >= 0 else 'neg'
