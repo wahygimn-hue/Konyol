@@ -2,8 +2,12 @@
 backtest_web.py -- STRATEGI: acuan_mss (level awal H1 -> break-out -> MSS pertama jadi acuan -> acuan tersentuh -> MSS kedua -> entry)
 
 ALUR (Long; Short = cermin)
-1) LEVEL AWAL H1 (tanpa FVG, tanpa EMA, tanpa filter): c1 bearish lalu c2 bullish, level = ujung wick terendah c1/c2.
+1) LEVEL AWAL H1 (tanpa FVG, tanpa EMA): c1 bearish lalu c2 bullish, level = ujung wick terendah c1/c2.
    (Short: c1 bullish lalu c2 bearish, level = ujung wick tertinggi c1/c2.)
+   FILTER LEVEL (NS_LV_N=5): candle pemilik ujung wick terpanjang (c1 atau c2) harus punya 5 candle kiri dan 5 candle kanan
+   yang tidak melebihi ujung itu (body/wick; Support: tidak ada low lebih rendah, Resisten: tidak ada high lebih tinggi).
+   Angka sama persis dianggap tidak melebihi (NS_LV_EQUAL=valid; invalid = ditolak). NS_LV_N=0 = filter mati.
+   Level baru dianggap ada setelah 5 candle kanan close, jadi break-out dicari mulai candle setelahnya.
 2) BREAK-OUT: candle H1 pertama setelah c2 yang BODY-nya close menembus level (Long: close < level; Short: close > level).
    Sentuhan wick saja tidak dihitung.
 3) MSS PERTAMA: begitu candle break-out close, langsung cari MSS M5 (aturan P valid + swing referensi, N kiri-kanan = NS_P_SWING / NS_MSS_SWING).
@@ -19,7 +23,7 @@ Deploy Railway: Start command -> python backtest_web.py ; buka domain Railway.
 Endpoint: /  (dashboard) | /trades.txt (satu blok per trade, satu field per baris) | /ringkasan.txt | /logs
 Env: SYMBOLS (mis. FARTCOINUSDT,ETHFIUSDT), BACKTEST_START_DATE, BACKTEST_END_DATE, RR (3), RISK_PCT, INITIAL_BALANCE,
 FEE_ENTRY_PCT, FEE_EXIT_PCT, LEVERAGE, MARGIN_USAGE_CAP, MAX_CONCURRENT (kosong/0 = tanpa batas),
-NS_P_SWING (1), NS_MSS_SWING (1), NS_LOOKBACK (100), NS_P_EQUAL / NS_SW_EQUAL (merge), NS_MSS_REF (range).
+NS_LV_N (5), NS_LV_EQUAL (valid), NS_P_SWING (1), NS_MSS_SWING (1), NS_LOOKBACK (100), NS_P_EQUAL / NS_SW_EQUAL (merge), NS_MSS_REF (range).
 """
 import os, threading, time, bisect, heapq
 from datetime import datetime, timezone, timedelta
@@ -45,7 +49,7 @@ RR               = float(os.environ.get('RR', '3'))
 LEVERAGE         = float(os.environ.get('LEVERAGE', '50'))
 MARGIN_USAGE_CAP = float(os.environ.get('MARGIN_USAGE_CAP', '0.90'))
 _mc = os.environ.get('MAX_CONCURRENT', '').strip().lower()
-MAX_CONCURRENT   = float('inf') if _mc in ('', '0', 'unlimited', 'inf') else int(_mc)
+MAX_CONCURRENT   = float('inf') if _mc in ('', '10', 'unlimited', 'inf') else int(_mc)
 
 NS_MSS_SWING = int(os.environ.get('NS_MSS_SWING', 1))      # swing fractal M5: N candle kiri & kanan
 NS_P_SWING   = int(os.environ.get('NS_P_SWING', 1))        # P valid M5: N candle kiri & kanan tidak melampaui P
@@ -53,6 +57,8 @@ NS_LOOKBACK  = int(os.environ.get('NS_LOOKBACK', 100))     # swing boleh dari N 
 NS_SW_EQUAL  = os.environ.get('NS_SW_EQUAL', 'merge').strip().lower()
 NS_P_EQUAL   = os.environ.get('NS_P_EQUAL', 'merge').strip().lower()
 NS_MSS_REF   = os.environ.get('NS_MSS_REF', 'range').strip().lower()
+NS_LV_N      = int(os.environ.get('NS_LV_N', 5))                  # filter level: ujung wick terpanjang c1/c2 -> N candle kiri & kanan tidak melebihi (0 = matikan)
+NS_LV_EQUAL  = os.environ.get('NS_LV_EQUAL', 'valid').strip().lower()  # valid = angka sama TIDAK dianggap melebihi | invalid = angka sama ditolak
 
 BACKTEST_START_DATE = os.environ.get('BACKTEST_START_DATE', '2025-01-01')
 BACKTEST_END_DATE   = os.environ.get('BACKTEST_END_DATE', datetime.now(timezone.utc).strftime('%Y-%m-%d'))
@@ -355,7 +361,7 @@ def process_coin(symbol, m5df):
     o = h1['open'].values.astype(float); h = h1['high'].values.astype(float)
     l = h1['low'].values.astype(float); c = h1['close'].values.astype(float)
     n = len(c)
-    st = dict(level=0, breakout=0, no_mss1=0, mss1=0, no_touch=0, touch=0, no_mss2=0, signal=0, dup=0)
+    st = dict(level=0, level_valid=0, breakout=0, no_mss1=0, mss1=0, no_touch=0, touch=0, no_mss2=0, signal=0, dup=0)
     cands = []
     r1_cache = {}; r2_cache = {}
     for i in range(0, n - 2):
@@ -366,11 +372,30 @@ def process_coin(symbol, m5df):
                 continue
             lvl = min(l[i], l[i + 1]) if sup else max(h[i], h[i + 1])
             st['level'] += 1
-            seg = c[i + 2:]
+            start = i + 2
+            if NS_LV_N > 0:
+                # ujung wick terpanjang antara c1/c2 (Support: low terendah, Resisten: high tertinggi)
+                if sup:
+                    m = i if l[i] <= l[i + 1] else i + 1
+                else:
+                    m = i if h[i] >= h[i + 1] else i + 1
+                if m - NS_LV_N < 0 or m + NS_LV_N >= n:
+                    continue
+                if sup:
+                    left = l[m - NS_LV_N:m]; right = l[m + 1:m + 1 + NS_LV_N]
+                    bad = (left <= lvl).any() or (right <= lvl).any() if NS_LV_EQUAL == 'invalid' else (left < lvl).any() or (right < lvl).any()
+                else:
+                    left = h[m - NS_LV_N:m]; right = h[m + 1:m + 1 + NS_LV_N]
+                    bad = (left >= lvl).any() or (right >= lvl).any() if NS_LV_EQUAL == 'invalid' else (left > lvl).any() or (right > lvl).any()
+                if bad:
+                    continue
+                start = m + NS_LV_N + 1        # level baru pasti setelah N candle kanan close
+            st['level_valid'] += 1
+            seg = c[start:]
             hit = np.flatnonzero(seg < lvl) if sup else np.flatnonzero(seg > lvl)
             if len(hit) == 0:
                 continue
-            k = i + 2 + int(hit[0]); st['breakout'] += 1
+            k = start + int(hit[0]); st['breakout'] += 1
             tj0 = int(np.searchsorted(TS5, ts[k] + H1_MS)) - 1        # candle M5 terakhir di dalam candle break-out
             if tj0 < 0 or tj0 + 2 >= n5:
                 continue
@@ -501,7 +526,7 @@ def _run():
     global _phase, _trades, _summary, _funnel, _monthly, _avg_monthly_growth, _per_symbol
     try:
         _log_msg(f"🚀 Backtest acuan_mss — {len(SYMBOLS)} koin, {BACKTEST_START_DATE} s/d {BACKTEST_END_DATE}")
-        _log_msg(f"   Level awal H1 (tanpa FVG) -> break-out body -> MSS pertama (acuan) -> acuan tersentuh -> MSS kedua -> entry MARKET, "
+        _log_msg(f"   Level awal H1 (tanpa FVG, filter ujung wick {NS_LV_N} kiri-kanan) -> break-out body -> MSS pertama (acuan) -> acuan tersentuh -> MSS kedua -> entry MARKET, "
                  f"SL ujung MSS kedua, TP 1:{RR:g}. Risk {RISK_PCT*100:.1f}%/trade, leverage {LEVERAGE:g}x, slot {'tanpa batas' if MAX_CONCURRENT == float('inf') else int(MAX_CONCURRENT)}.")
         all_c = []; tot = {}
         for symbol in SYMBOLS:
@@ -513,7 +538,7 @@ def _run():
             all_c.extend(cands)
             for k, v in st.items():
                 tot[k] = tot.get(k, 0) + v
-            _log_msg(f"   ✅ {symbol}: {len(df):,} candle M5, {st['level']} level, {st['breakout']} break-out, MSS1 {st['mss1']}, "
+            _log_msg(f"   ✅ {symbol}: {len(df):,} candle M5, {st['level']} level ({st['level_valid']} lolos filter), {st['breakout']} break-out, MSS1 {st['mss1']}, "
                      f"acuan tersentuh {st['touch']}, sinyal {st['signal']} (kembar {st['dup']}) -> {len(cands)} kandidat entry.")
         _log_msg(f"🧮 Simulasi gabungan ({len(all_c)} kandidat)...")
         trades, summ, bl = simulate(all_c)
@@ -562,7 +587,7 @@ def _ringkasan_txt():
          f"Total R : {s['total_r']:.2f}", f"Rata-rata R : {s['avg_r']:.2f}", f"Balance awal : ${INITIAL_BALANCE:.2f}",
          f"Balance akhir : ${s['final_balance']:.2f}", f"ROI : {s['roi']:+.1f}%", f"Max drawdown : {s['mdd']:.1f}%",
          f"Rata-rata growth per bulan : {avg:+.2f}%", "", "FUNNEL",
-         f"Level H1 awal : {f.get('level',0)}", f"Break-out : {f.get('breakout',0)}", f"Tanpa MSS pertama : {f.get('no_mss1',0)}",
+         f"Level H1 awal (pola c1/c2) : {f.get('level',0)}", f"Level lolos filter 5 kiri-kanan : {f.get('level_valid',0)}", f"Break-out : {f.get('breakout',0)}", f"Tanpa MSS pertama : {f.get('no_mss1',0)}",
          f"MSS pertama (acuan) : {f.get('mss1',0)}", f"Acuan tak pernah tersentuh : {f.get('no_touch',0)}",
          f"Acuan tersentuh : {f.get('touch',0)}", f"Tanpa MSS kedua : {f.get('no_mss2',0)}", f"Sinyal entry (MSS kedua) : {f.get('signal',0)}",
          f"Sinyal kembar dilewati : {f.get('dup',0)}", f"Dilewati posisi searah masih terbuka : {f.get('open_same',0)}",
@@ -587,7 +612,7 @@ def _render_html():
     refresh = '<meta http-equiv="refresh" content="8">' if phase == 'running' else ''
     st_txt = {'running': '⏳ Berjalan...', 'done': '✅ Selesai', 'error': '❌ Error (lihat log)'}.get(phase, phase)
     body = [f"<h2>Backtest acuan_mss</h2><p>{st_txt} — {len(SYMBOLS)} koin, {BACKTEST_START_DATE} s/d {BACKTEST_END_DATE}</p>",
-            "<div class='note'>Level awal H1 (tanpa FVG) → break-out body → <b>MSS pertama</b> (ujungnya jadi acuan) → acuan tersentuh → "
+            f"<div class='note'>Level awal H1 (tanpa FVG, ujung wick {NS_LV_N} kiri-kanan) → break-out body → <b>MSS pertama</b> (ujungnya jadi acuan) → acuan tersentuh → "
             f"<b>MSS kedua</b> → entry market, SL ujung MSS kedua, TP 1:{RR:g}. Risk {RISK_PCT*100:.1f}%/trade (compounding), leverage {LEVERAGE:g}x.</div>"]
     if phase == 'done' and s:
         cls = 'pos' if s['total_r'] >= 0 else 'neg'
@@ -599,7 +624,7 @@ def _render_html():
                     f"<div class='c'><span>Max DD</span><b>{s['mdd']:.1f}%</b></div></div>")
         body.append("<p><a href='/trades.txt'>📄 trades.txt</a> &nbsp; <a href='/ringkasan.txt'>📄 ringkasan.txt</a> &nbsp; <a href='/logs'>📜 logs</a></p>")
         body.append("<h3>Funnel</h3><p class='small'>"
-                    f"Level {f.get('level',0)} → break-out {f.get('breakout',0)} → MSS pertama {f.get('mss1',0)} → acuan tersentuh {f.get('touch',0)} → "
+                    f"Level {f.get('level',0)} → lolos filter {f.get('level_valid',0)} → break-out {f.get('breakout',0)} → MSS pertama {f.get('mss1',0)} → acuan tersentuh {f.get('touch',0)} → "
                     f"sinyal MSS kedua {f.get('signal',0)} (kembar {f.get('dup',0)}, posisi searah terbuka {f.get('open_same',0)}, slot {f.get('slot',0)}, margin {f.get('margin',0)}).</p>")
         body.append(f"<h3>Pertumbuhan per Bulan <small>(rata-rata {avg:+.2f}%/bulan)</small></h3><table><tr><th>Bulan</th><th>Trade</th><th>WR</th><th>R</th><th>Awal</th><th>Akhir</th><th>Growth</th></tr>")
         for m in mo:
