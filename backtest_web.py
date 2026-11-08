@@ -63,10 +63,10 @@ IFVG_LOOKBACK    = int(os.environ.get('IFVG_LOOKBACK', 48))          # FVG tidak
 
 # --- STRATEGI: 'multi_acuan' (baru, default) | 'ifvg_ema' (strategi lama EMA21/30 + IFVG limit + target level lawan) ---
 STRATEGY         = os.environ.get('STRATEGY', 'multi_acuan').strip().lower()
-NS_SWING_EXT     = int(os.environ.get('NS_SWING_EXT', 5))            # titik terjauh harus swing: N candle H1 kiri & kanan tidak melebihi
+NS_SWING_EXT     = int(os.environ.get('NS_SWING_EXT', 3))            # titik terjauh harus swing: N candle H1 kiri & kanan tidak melebihi
 NS_LOOKBACK      = int(os.environ.get('NS_LOOKBACK', 100))            # FVG lama boleh dari N candle M5 sebelum acuan tersentuh
-NS_MSS_SWING     = int(os.environ.get('NS_MSS_SWING', 5))            # swing fractal M5 utk MSS: N candle kiri & kanan (default 1)
-NS_P_SWING       = int(os.environ.get('NS_P_SWING', 5))             # P valid M5: N candle kiri & N candle kanan harus tidak melampaui P (default 5; sebelumnya 1). Swing antara P lama & P baru juga harus swing fractal NS_MSS_SWING kiri-kanan
+NS_MSS_SWING     = int(os.environ.get('NS_MSS_SWING', 1))            # swing fractal M5 (swing MSS, SH2, SH3, swing low BOS): N candle kiri & kanan (default 1)
+NS_P_SWING       = int(os.environ.get('NS_P_SWING', 1))             # P valid M5: N candle kiri & N candle kanan harus tidak melampaui P (default 1; sempat dicoba 5). Swing antara P lama & P baru juga harus swing fractal NS_MSS_SWING kiri-kanan
 NS_SW_EQUAL      = os.environ.get('NS_SW_EQUAL', 'merge').strip().lower()   # swing fractal M5, angka sama pada candle berurutan: 'merge' (default: dijadikan SATU KESATUAN: candle sebelum & sesudah kesatuan tidak boleh melebihi/sama) | 'invalid' (sama = bukan swing) | 'valid' (sama boleh, cara lama)
 NS_H1_EQUAL      = os.environ.get('NS_H1_EQUAL', 'merge').strip().lower()   # P & swing H1, angka sama pada candle berurutan: 'merge' (default, satu kesatuan) | 'invalid' (sama = tidak valid)
 NS_MSS_REF       = os.environ.get('NS_MSS_REF', 'range').strip().lower()   # 'range' (default): swing = tertinggi/terendah antara P lama & P baru, dihitung ulang tiap P bergeser | 'range_max' (swing tak pernah turun) | 'fractal' (lama)
@@ -774,7 +774,7 @@ def _ns_find_mss(sup, tj0, stop, H5, L5, C5, resume=None):
     """Market Structure Shift M5 setelah acuan tersentuh di candle tj0 (SMC).
     Long : harga turun ke acuan, low terendah = P. MSS = candle M5 pertama yang CLOSE di atas swing high referensi.
     Short: kebalikannya (P = high tertinggi, referensi = swing low).
-    P VALID: candle ekstrem (Long: low terendah sejak sentuh; Short: high tertinggi) yang tidak dilampaui oleh NS_P_SWING (default 5) candle di kirinya
+    P VALID: candle ekstrem (Long: low terendah sejak sentuh; Short: high tertinggi) yang tidak dilampaui oleh NS_P_SWING (default 1) candle di kirinya
       dan NS_P_SWING candle di kanannya (P baru valid setelah candle kanan ke-N closed; kiri boleh candle sebelum sentuh). Angka SAMA PERSIS dgn tetangga kiri/kanan juga TIDAK valid (NS_P_EQUAL='invalid', default): P harus
       benar-benar lebih dalam dari kedua tetangganya (Long: low-nya < low kiri DAN < low kanan). P baru dianggap valid setelah candle
       kanannya closed; kalau candle kanan membuat ekstrem yang lebih jauh, kandidat lama gugur (bukan P) dan kandidat baru yang dipakai;
