@@ -4,7 +4,7 @@ backtest_web.py -- MODE bias_sweep (NS_MODE=bias_sweep): TF struktur BS_TF (defa
   (ujung bias baru = pergerakan terjauh sebelum break). Kalau ujung bias hasil balik itu di-break lagi, bias dikosongkan sampai ada MSS baru.
   Range = dari ujung bias sampai titik tertinggi (Long) / terendah (Short) sejak bias. Harga MENYENTUH titik tertinggi (Short: terendah) range = pencarian low direset dan dicari lagi dari candle sesudahnya (terus berulang sampai MSS lawan / bias berubah).
   Entry (bias Long): dari ujung atas range cari swing low (BS_N kiri-kanan) pertama = kandidat. Kalau ada candle CLOSE menembus level kandidat (BS_SWEEP=close; body = min(open,close)) low itu terbreak = gagal, cari low baru yang lebih bawah. Swing low lebih rendah (sweep wick TANPA terbreak, juga swing BS_N kiri-kanan) + candle TEPAT sesudahnya engulfing
-  (close di atas high candle sweep) = setup. Limit di 50% body engulfing, SL di ujung wick candle sweep (BS_SL=wick, default) atau 50% range candle (BS_SL=mid), TP = titik tertinggi range. TP tersentuh sebelum limit terisi = batal.
+  (close di atas high candle sweep) = setup. Limit di 50% body engulfing, SL di ujung wick candle engulfing (BS_SL=eng, default), ujung wick candle sweep (BS_SL=wick), atau 50% range candle sweep (BS_SL=mid), TP = titik tertinggi range. TP tersentuh sebelum limit terisi = batal.
   (limit juga dibatalkan kalau bias berubah). Satu posisi / satu limit pada satu waktu. Env: BS_TF (60), BS_N (1), MF_MIN_STRUCT, MF_EQUAL, MF_BODY, MF_SL_REV (balik bias saat ujung MSS di-break).
 backtest_web.py -- STRATEGI: mss_flip (NS_MODE=mss_flip)
 MODE mss_flip (M5 default, bisa MF_TF=15 dst, Long & Short, stop-and-reverse, TANPA TP). Alur (Long; Short = cermin):
@@ -127,7 +127,7 @@ MF_BODY      = os.environ.get('MF_BODY', '1').strip() not in ('0', 'false', 'no'
 MF_SL_REV    = os.environ.get('MF_SL_REV', '1').strip() not in ('0', 'false', 'no')   # posisi hasil MSS kena SL (= ujung MSS ter-break) -> entry lawan arah di level itu, SL di pergerakan terjauh sebelum break
 MF_TF        = int(os.environ.get('MF_TF', 5))                   # timeframe mss_flip dalam menit: 5 (default) atau kelipatan 5 (mis. 15), diresample dari data M5
 BS_TF        = int(os.environ.get('BS_TF', 60))                  # bias_sweep: timeframe (menit) diresample dari M5; 60 = H1
-BS_SL        = os.environ.get('BS_SL', 'wick').strip().lower()   # bias_sweep: wick = SL di ujung wick candle sweep (Long: low, Short: high) | mid = 50% range candle sweep
+BS_SL        = os.environ.get('BS_SL', 'eng').strip().lower()    # bias_sweep: eng = SL di ujung wick candle ENGULFING (Long: low, Short: high) | wick = ujung wick candle sweep | mid = 50% range candle sweep
 BS_SWEEP     = os.environ.get('BS_SWEEP', 'close').strip().lower()  # bias_sweep: low dianggap TERBREAK (bukan sweep) kalau close candle menembus levelnya (close) | atau body menembus (body)
 _bt_ = os.environ.get('BS_TRACE', '').strip()
 _BS_TRACE = tuple(int(x) for x in _bt_.split(',')) if _bt_ else None   # debug saja
@@ -186,7 +186,7 @@ _per_symbol = []
 
 def _entry_desc():
     if NS_MODE == 'bias_sweep':
-        return f"bias dari struktur/MSS → limit 50% body engulfing setelah sweep low/high, SL {'di ujung wick candle sweep' if BS_SL == 'wick' else '50% range candle sweep'}, TP titik tertinggi/terendah range"
+        return f"bias dari struktur/MSS → limit 50% body engulfing setelah sweep low/high, SL {'di ujung wick candle engulfing' if BS_SL == 'eng' else 'di ujung wick candle sweep' if BS_SL == 'wick' else '50% range candle sweep'}, TP titik tertinggi/terendah range"
     if NS_MODE == 'mss_flip':
         return 'MSS (swing antara P lama-P baru di-break close) → entry market di close MSS, SL ujung MSS, TANPA TP; keluar hanya lewat SL atau MSS lawan (flip)'
     if NS_MODE == 'fibo_bos':
@@ -920,7 +920,7 @@ def biassweep_signals(symbol, TS, O, H, L, C, st):
                 e = j + 1                                                          # candle tepat sesudah candle sweep
                 if live and ((C[e] > H[j]) if sup else (C[e] < L[j])):          # engulfing: close body menembus ujung wick candle sweep
                     st['bs_engulf'] += 1
-                    lim = (O[e] + C[e]) / 2.0; slp = ((L[j] if sup else H[j]) if BS_SL == 'wick' else (H[j] + L[j]) / 2.0)
+                    lim = (O[e] + C[e]) / 2.0; slp = ((L[e] if sup else H[e]) if BS_SL == 'eng' else (L[j] if sup else H[j]) if BS_SL == 'wick' else (H[j] + L[j]) / 2.0)
                     tp = max(bias['ext'], float(H[e])) if sup else min(bias['ext'], float(L[e]))
                     if pend is None and pos is None and ((tp > lim > slp) if sup else (tp < lim < slp)):
                         rr = abs(tp - lim) / abs(lim - slp)
@@ -1374,7 +1374,7 @@ def _bs_block(k, tr):
             f"Candle sweep : {_wib(tr['sw_ts'])} (low {g(tr['sw_lo'])}, high {g(tr['sw_hi'])})",
             f"Candle engulfing : {_wib(tr['eng_ts'])} (open {g(tr['eng_o'])}, close {g(tr['eng_c'])})",
             f"Limit dipasang (setelah close candle) : {_wib(tr['set_ts'])}", f"Limit terisi (candle) : {_wib(tr['fill_ts'])}",
-            f"Entry (50% body engulfing) : {g(tr['entry'])}", f"SL ({'ujung wick candle sweep' if BS_SL == 'wick' else '50% range candle sweep'}) : {g(tr['sl'])}", f"TP ({'titik tertinggi' if long_ else 'titik terendah'} range) : {g(tr['tp'])}",
+            f"Entry (50% body engulfing) : {g(tr['entry'])}", f"SL ({'ujung wick candle engulfing' if BS_SL == 'eng' else 'ujung wick candle sweep' if BS_SL == 'wick' else '50% range candle sweep'}) : {g(tr['sl'])}", f"TP ({'titik tertinggi' if long_ else 'titik terendah'} range) : {g(tr['tp'])}",
             f"RR rencana : 1:{tr['rr']:.2f}", f"Jarak SL : {tr['dist'] / tr['entry'] * 100:.2f}%",
             f"Exit waktu : {_wib(tr['exit_ts'])}", f"Exit harga : {g(tr['exit_px'])}", f"Lama posisi : {held // 60}j {held % 60}m",
             f"Balance setelah : ${tr['bal_after']:.2f}", ""]
