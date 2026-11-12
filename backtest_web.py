@@ -1,6 +1,6 @@
 """
 backtest_web.py -- MODE bias_sweep (NS_MODE=bias_sweep): TF struktur BS_TF (default 60 = H1), struktur hanya jadi BIAS, entry = limit setelah sweep + engulfing
-  Bias (Long; Short = cermin): struktur P -> MSS seperti mode mss_flip. MSS menetapkan bias searah MSS. Kalau ujung MSS di-break (wick menyentuh), bias berbalik ke arah sebelumnya
+  Bias (Long; Short = cermin): struktur P -> MSS seperti mode mss_flip. MSS baru mengubah bias kalau SESUDAH MSS ada minimal satu struktur searah MSS (BS_CONFIRM=1: P awal baru sesudah MSS lalu P2 menembus P awal; Long = swing high makin tinggi). Sebelum itu bias lama tetap; ujung MSS ter-break sebelum ada struktur = MSS gagal. Kalau ujung MSS di-break (wick menyentuh), bias berbalik ke arah sebelumnya
   (ujung bias baru = pergerakan terjauh sebelum break). Kalau ujung bias hasil balik itu di-break lagi, bias dikosongkan sampai ada MSS baru.
   Range = dari ujung bias sampai titik tertinggi (Long) / terendah (Short) sejak bias. Harga MENYENTUH titik tertinggi (Short: terendah) range = pencarian low direset dan dicari lagi dari candle sesudahnya (terus berulang sampai MSS lawan / bias berubah).
   Entry (bias Long): dari ujung atas range cari swing low (BS_N kiri-kanan) pertama = kandidat. Kalau ada candle CLOSE menembus level kandidat (BS_SWEEP=close; body = min(open,close)) low itu terbreak = gagal, cari low baru yang lebih bawah. Candle yang PERTAMA KALI menyentuh kandidat (wick, tanpa close menembus) = candle sweep; candle TEPAT sesudahnya HARUS engulfing
@@ -132,6 +132,7 @@ BS_SWEEP     = os.environ.get('BS_SWEEP', 'close').strip().lower()  # bias_sweep
 _bt_ = os.environ.get('BS_TRACE', '').strip()
 _BS_TRACE = tuple(int(x) for x in _bt_.split(',')) if _bt_ else None   # debug saja
 _BS_LOG = []
+BS_CONFIRM   = int(os.environ.get('BS_CONFIRM', 1))               # bias_sweep: bias baru baru berlaku setelah MSS DIIKUTI minimal N struktur searah MSS (P2 menembus P awal sesudah MSS). 0 = bias langsung berubah saat MSS
 BS_N         = int(os.environ.get('BS_N', 1))                    # bias_sweep: swing N kiri & N kanan (rantai P dan pencarian low/high entry)
 MF_FLIP      = os.environ.get('MF_FLIP', '1').strip() not in ('0', 'false', 'no')   # MSS lawan menutup posisi & entry arah lawan
 NS_LV_N      = int(os.environ.get('NS_LV_N', 5))                  # filter level: ujung wick terpanjang c1/c2 -> N candle kiri & kanan tidak melebihi (0 = matikan)
@@ -874,17 +875,18 @@ def _tf_arrays(m5df, tf):
 
 def biassweep_signals(symbol, TS, O, H, L, C, st):
     n = len(C); N = BS_N
-    for k in ('bs_p', 'bs_struct', 'bs_mss', 'bs_bias', 'bs_flipback', 'bs_clear', 'bs_sweep', 'bs_engulf', 'bs_setup', 'bs_cancel_tp', 'bs_cancel_bias', 'bs_fill', 'bs_pend_end', 'bs_cand_fail', 'bs_top_reset', 'bs_refresh', 'bs_eng_fail'):
+    for k in ('bs_p', 'bs_struct', 'bs_mss', 'bs_bias', 'bs_flipback', 'bs_clear', 'bs_sweep', 'bs_engulf', 'bs_setup', 'bs_cancel_tp', 'bs_cancel_bias', 'bs_fill', 'bs_pend_end', 'bs_cand_fail', 'bs_top_reset', 'bs_refresh', 'bs_eng_fail', 'bs_eng_wick', 'bs_pm', 'bs_pm_ok', 'bs_pm_fail', 'bs_pm_cancel'):
         st.setdefault(k, 0)
     new_chain = lambda reset: dict(reset=reset, p=None, first=None, prev=None, ns=0, sw=None, sw_px=None)
     ch = {True: new_chain(0), False: new_chain(0)}
-    bias = None; pend = None; pos = None; out = []
+    bias = None; pend = None; pos = None; out = []; pm = None          # pm = MSS yang menunggu struktur searah sebelum bias berubah
 
     def swing(sup, j, lo):
         return _mf_swing_at(L if sup else H, j, N, sup, lo)
 
     def set_bias(sup, kind, end, ext, ext_idx, p_idx, t):
-        nonlocal bias, pend, ch
+        nonlocal bias, pend, ch, pm
+        pm = None
         if pend is not None:
             pend = None; st['bs_cancel_bias'] += 1
         bias = dict(sup=sup, kind=kind, end=float(end), ext=float(ext), ext_idx=int(ext_idx), p_idx=int(p_idx), cand=None, floor=None, touch=None, t=t)
@@ -904,7 +906,14 @@ def biassweep_signals(symbol, TS, O, H, L, C, st):
         A = bias['touch']
         if A is not None and tt == A + 1:
             bias['touch'] = None; c0 = bias['cand']; e = tt
-            eng = ((C[e] > H[A]) and (L[e] > L[A])) if sup else ((C[e] < L[A]) and (H[e] < H[A]))
+            body_ok = (C[e] > H[A]) if sup else (C[e] < L[A])                                   # close body menembus ujung wick candle sweep
+            if MF_EQUAL == 'valid':                                                            # wick engulfing tidak boleh melebihi wick candle sweep (sama persis boleh)
+                wick_ok = (L[e] >= L[A]) if sup else (H[e] <= H[A])
+            else:                                                                              # default: sama persis dianggap melebihi/tidak valid (seperti swing 1 kiri 1 kanan)
+                wick_ok = (L[e] > L[A]) if sup else (H[e] < H[A])
+            if live and body_ok and not wick_ok:
+                st['bs_eng_wick'] += 1
+            eng = body_ok and wick_ok
             if eng:
                 if live:
                     st['bs_engulf'] += 1
@@ -976,10 +985,13 @@ def biassweep_signals(symbol, TS, O, H, L, C, st):
                 nsup = not bias['sup']; st['bs_flipback'] += 1
                 set_bias(nsup, 'rev', far, (H[t] if nsup else L[t]), t, bias['p_idx'], t)
             else:
-                bias = None; st['bs_clear'] += 1
+                bias = None; pm = None; st['bs_clear'] += 1
                 if pend is not None:
                     pend = None; st['bs_cancel_bias'] += 1
                 ch = {True: new_chain(t), False: new_chain(t)}
+        # (b2) MSS yang menunggu struktur: ujung MSS ter-break sebelum ada struktur searah -> gagal, bias tidak berubah
+        if pm is not None and t > pm['t'] and ((L[t] <= pm['end']) if pm['sup'] else (H[t] >= pm['end'])):
+            pm = None; st['bs_pm_fail'] += 1
         # (c) rantai P / MSS -> bias
         sigs = []
         for sup in (True, False):
@@ -1009,9 +1021,24 @@ def biassweep_signals(symbol, TS, O, H, L, C, st):
                 bias['end'] = end; bias['kind'] = 'mss'; bias['p_idx'] = int(c['p'])
                 ch = {True: new_chain(t), False: new_chain(t)}
                 st['bs_refresh'] += 1
+                if pm is not None:                                             # MSS lawan yang menunggu struktur dibatalkan: bias masih sama
+                    pm = None; st['bs_pm_cancel'] += 1
+            elif BS_CONFIRM > 0:
+                if pm is not None and pm['sup'] == sup:                         # MSS searah dengan MSS yang sedang menunggu: diabaikan
+                    ch[sup] = new_chain(t)
+                else:                                                          # MSS lawan bias: bias BELUM berubah, tunggu struktur searah MSS
+                    pm = dict(sup=sup, end=end, p_idx=int(c['p']), t=t)
+                    ch = {True: new_chain(t), False: new_chain(t)}
+                    st['bs_pm'] += 1
             else:
                 set_bias(sup, 'mss', end, float(seg[k_]), c['p'] + k_, c['p'], t)
             break
+        # (c2) struktur searah MSS terbentuk (P2 menembus P awal sesudah MSS) -> bias berubah
+        if pm is not None and ch[not pm['sup']]['ns'] >= max(BS_CONFIRM, 1):
+            pseg = H[pm['p_idx']:t + 1] if pm['sup'] else L[pm['p_idx']:t + 1]
+            pk = int(np.argmax(pseg) if pm['sup'] else np.argmin(pseg))
+            st['bs_pm_ok'] += 1
+            set_bias(pm['sup'], 'mss', pm['end'], float(pseg[pk]), pm['p_idx'] + pk, pm['p_idx'], t)
         # (d) cari entry di dalam range bias (low terus dicari; low yang ter-break body gagal -> cari yang lebih bawah)
         if bias is not None:
             if (H[t] >= bias['ext']) if bias['sup'] else (L[t] <= bias['ext']):     # harga MENYENTUH titik tertinggi (Short: terendah) range -> pencarian low direset, cari low baru sesudah candle ini
@@ -1381,7 +1408,7 @@ def _bs_block(k, tr):
     held = (tr['exit_idx'] - tr['t']) * BS_TF
     why = {'SL': 'SL kena', 'TP': 'TP kena'}.get(tr['why'], tr['why'])
     low_hi = ('low', 'high') if long_ else ('high', 'low')
-    kind = 'MSS' if tr['bias_kind'] == 'mss' else 'balik setelah ujung MSS ter-break'
+    kind = ('MSS + struktur searah' if BS_CONFIRM > 0 else 'MSS') if tr['bias_kind'] == 'mss' else 'balik setelah ujung MSS ter-break'
     return [f"Trade : {k}", f"Coin : {tr['symbol']}", f"Dir : {tr['d']}", f"Hasil bersih : {tr['r']:+.2f}R", f"Hasil kotor : {tr['gross_r']:+.2f}R", f"Fee : -{tr['fee_r']:.2f}R",
             f"Exit oleh : {why}", f"Bias : {tr['d']} ({kind})", f"Ujung bias (invalidasi) : {g(tr['bias_end'])}",
             f"{low_hi[0].capitalize()} yang di-sweep : {_wib(tr['cand_ts'])} @ {g(tr['cand_px'])}",
@@ -1496,9 +1523,9 @@ def _trades_txt():
 
 def _funnel_lines(f):
     if NS_MODE == 'bias_sweep':
-        return [f"P valid : {f.get('bs_p',0)}", f"Struktur : {f.get('bs_struct',0)}", f"MSS (bias ditetapkan) : {f.get('bs_mss',0)}", f"Bias berubah/ditetapkan : {f.get('bs_bias',0)}", f"MSS searah bias (bias tetap, hanya ujung bias dipindah) : {f.get('bs_refresh',0)}",
+        return [f"P valid : {f.get('bs_p',0)}", f"Struktur : {f.get('bs_struct',0)}", f"MSS (semua) : {f.get('bs_mss',0)}", f"MSS menunggu struktur searah (bias belum berubah) : {f.get('bs_pm',0)}", f"  jadi bias setelah ada struktur searah : {f.get('bs_pm_ok',0)}", f"  gagal, ujung MSS ter-break sebelum ada struktur : {f.get('bs_pm_fail',0)}", f"  dibatalkan MSS searah bias : {f.get('bs_pm_cancel',0)}", f"Bias berubah/ditetapkan : {f.get('bs_bias',0)}", f"MSS searah bias (bias tetap, hanya ujung bias dipindah) : {f.get('bs_refresh',0)}",
                 f"Bias balik karena ujung MSS ter-break : {f.get('bs_flipback',0)}", f"Bias dikosongkan (ujung bias balik ter-break) : {f.get('bs_clear',0)}",
-                f"Pencarian direset (harga menyentuh titik tertinggi/terendah range) : {f.get('bs_top_reset',0)}", f"Low/high gagal (close/body menembus = terbreak, bukan sweep) : {f.get('bs_cand_fail',0)}", f"Candle pertama menyentuh low/high, tidak terbreak (sweep wick) : {f.get('bs_sweep',0)}", f"Low gagal (candle sesudah sentuhan tidak engulfing) : {f.get('bs_eng_fail',0)}", f"Sweep + engulfing : {f.get('bs_engulf',0)}", f"Limit dipasang : {f.get('bs_setup',0)}",
+                f"Pencarian direset (harga menyentuh titik tertinggi/terendah range) : {f.get('bs_top_reset',0)}", f"Low/high gagal (close/body menembus = terbreak, bukan sweep) : {f.get('bs_cand_fail',0)}", f"Candle pertama menyentuh low/high, tidak terbreak (sweep wick) : {f.get('bs_sweep',0)}", f"Low gagal (candle sesudah sentuhan tidak engulfing) : {f.get('bs_eng_fail',0)}", f"  di antaranya close sudah menembus tapi wick engulfing melebihi wick candle sweep : {f.get('bs_eng_wick',0)}", f"Sweep + engulfing : {f.get('bs_engulf',0)}", f"Limit dipasang : {f.get('bs_setup',0)}",
                 f"Limit batal (TP tersentuh dulu) : {f.get('bs_cancel_tp',0)}", f"Limit batal (bias berubah) : {f.get('bs_cancel_bias',0)}", f"Limit belum terisi di akhir data : {f.get('bs_pend_end',0)}", f"Limit terisi (jadi posisi) : {f.get('bs_fill',0)}"]
     if NS_MODE == 'mss_flip':
         return [f"P valid (swing {MF_N} kiri-kanan) : {f.get('mf_p',0)}", f"Struktur (P baru menembus P lama) : {f.get('mf_struct',0)}", f"MSS terbentuk : {f.get('mf_mss',0)}",
