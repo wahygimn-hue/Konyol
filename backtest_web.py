@@ -3,8 +3,8 @@ backtest_web.py -- MODE bias_sweep (NS_MODE=bias_sweep): TF struktur BS_TF (defa
   Bias (Long; Short = cermin): struktur P -> MSS seperti mode mss_flip. MSS menetapkan bias searah MSS. Kalau ujung MSS di-break (wick menyentuh), bias berbalik ke arah sebelumnya
   (ujung bias baru = pergerakan terjauh sebelum break). Kalau ujung bias hasil balik itu di-break lagi, bias dikosongkan sampai ada MSS baru.
   Range = dari ujung bias sampai titik tertinggi (Long) / terendah (Short) sejak bias. Harga MENYENTUH titik tertinggi (Short: terendah) range = pencarian low direset dan dicari lagi dari candle sesudahnya (terus berulang sampai MSS lawan / bias berubah).
-  Entry (bias Long): dari ujung atas range cari swing low (BS_N kiri-kanan) pertama = kandidat. Kalau ada candle CLOSE menembus level kandidat (BS_SWEEP=close; body = min(open,close)) low itu terbreak = gagal, cari low baru yang lebih bawah. Swing low lebih rendah (sweep wick TANPA terbreak, juga swing BS_N kiri-kanan) + candle TEPAT sesudahnya engulfing
-  (close di atas high candle sweep) = setup. Limit di 50% body engulfing, SL di ujung wick candle engulfing (BS_SL=eng, default), ujung wick candle sweep (BS_SL=wick), atau 50% range candle sweep (BS_SL=mid), TP = titik tertinggi range. TP tersentuh sebelum limit terisi = batal.
+  Entry (bias Long): dari ujung atas range cari swing low (BS_N kiri-kanan) pertama = kandidat. Kalau ada candle CLOSE menembus level kandidat (BS_SWEEP=close; body = min(open,close)) low itu terbreak = gagal, cari low baru yang lebih bawah. Candle yang PERTAMA KALI menyentuh kandidat (wick, tanpa close menembus) = candle sweep; candle TEPAT sesudahnya HARUS engulfing
+  (close di atas high candle sweep, low tidak di bawah low candle sweep) = setup. Tidak engulfing = low gagal, cari low lain yang lebih bawah. Limit di 50% body engulfing, SL di ujung wick candle sweep (BS_SL=wick, default), ujung wick candle engulfing (BS_SL=eng), atau 50% range candle sweep (BS_SL=mid), TP = titik tertinggi range. TP tersentuh sebelum limit terisi = batal.
   (limit juga dibatalkan kalau bias berubah). Satu posisi / satu limit pada satu waktu. Env: BS_TF (60), BS_N (1), MF_MIN_STRUCT, MF_EQUAL, MF_BODY, MF_SL_REV (balik bias saat ujung MSS di-break).
 backtest_web.py -- STRATEGI: mss_flip (NS_MODE=mss_flip)
 MODE mss_flip (M5 default, bisa MF_TF=15 dst, Long & Short, stop-and-reverse, TANPA TP). Alur (Long; Short = cermin):
@@ -127,7 +127,7 @@ MF_BODY      = os.environ.get('MF_BODY', '1').strip() not in ('0', 'false', 'no'
 MF_SL_REV    = os.environ.get('MF_SL_REV', '1').strip() not in ('0', 'false', 'no')   # posisi hasil MSS kena SL (= ujung MSS ter-break) -> entry lawan arah di level itu, SL di pergerakan terjauh sebelum break
 MF_TF        = int(os.environ.get('MF_TF', 5))                   # timeframe mss_flip dalam menit: 5 (default) atau kelipatan 5 (mis. 15), diresample dari data M5
 BS_TF        = int(os.environ.get('BS_TF', 60))                  # bias_sweep: timeframe (menit) diresample dari M5; 60 = H1
-BS_SL        = os.environ.get('BS_SL', 'eng').strip().lower()    # bias_sweep: eng = SL di ujung wick candle ENGULFING (Long: low, Short: high) | wick = ujung wick candle sweep | mid = 50% range candle sweep
+BS_SL        = os.environ.get('BS_SL', 'wick').strip().lower()    # bias_sweep: eng = SL di ujung wick candle ENGULFING (Long: low, Short: high) | wick = ujung wick candle sweep | mid = 50% range candle sweep
 BS_SWEEP     = os.environ.get('BS_SWEEP', 'close').strip().lower()  # bias_sweep: low dianggap TERBREAK (bukan sweep) kalau close candle menembus levelnya (close) | atau body menembus (body)
 _bt_ = os.environ.get('BS_TRACE', '').strip()
 _BS_TRACE = tuple(int(x) for x in _bt_.split(',')) if _bt_ else None   # debug saja
@@ -874,7 +874,7 @@ def _tf_arrays(m5df, tf):
 
 def biassweep_signals(symbol, TS, O, H, L, C, st):
     n = len(C); N = BS_N
-    for k in ('bs_p', 'bs_struct', 'bs_mss', 'bs_bias', 'bs_flipback', 'bs_clear', 'bs_sweep', 'bs_engulf', 'bs_setup', 'bs_cancel_tp', 'bs_cancel_bias', 'bs_fill', 'bs_pend_end', 'bs_cand_fail', 'bs_top_reset', 'bs_refresh'):
+    for k in ('bs_p', 'bs_struct', 'bs_mss', 'bs_bias', 'bs_flipback', 'bs_clear', 'bs_sweep', 'bs_engulf', 'bs_setup', 'bs_cancel_tp', 'bs_cancel_bias', 'bs_fill', 'bs_pend_end', 'bs_cand_fail', 'bs_top_reset', 'bs_refresh', 'bs_eng_fail'):
         st.setdefault(k, 0)
     new_chain = lambda reset: dict(reset=reset, p=None, first=None, prev=None, ns=0, sw=None, sw_px=None)
     ch = {True: new_chain(0), False: new_chain(0)}
@@ -887,48 +887,62 @@ def biassweep_signals(symbol, TS, O, H, L, C, st):
         nonlocal bias, pend, ch
         if pend is not None:
             pend = None; st['bs_cancel_bias'] += 1
-        bias = dict(sup=sup, kind=kind, end=float(end), ext=float(ext), ext_idx=int(ext_idx), p_idx=int(p_idx), cand=None, floor=None, t=t)
+        bias = dict(sup=sup, kind=kind, end=float(end), ext=float(ext), ext_idx=int(ext_idx), p_idx=int(p_idx), cand=None, floor=None, touch=None, t=t)
         ch = {True: new_chain(t), False: new_chain(t)}
         st['bs_bias'] += 1
         for tt in range(ext_idx + 1, t):                           # kandidat dari ujung atas (tanpa membuat setup dari masa lalu)
             cand_step(tt, False)
 
     def cand_step(tt, live):
-        """Satu langkah pencarian low/high di range bias pada candle tt. Low TERBREAK (close/body menembus level = bukan sweep wick) -> gagal, cari low baru yang LEBIH BAWAH dari low itu."""
+        """Satu langkah pencarian low/high di range bias pada candle tt.
+        Kandidat = swing low (Short: swing high). Candle yang PERTAMA KALI menyentuh kandidat (wick) = candle sweep A. Kalau A close menembus level = terbreak -> gagal.
+        Candle tepat sesudah A (tt = A+1) HARUS engulfing (close di atas high A, dan low-nya tidak di bawah low A = A tetap swing 1 kiri 1 kanan). Kalau tidak engulfing -> low gagal.
+        Low gagal -> cari low lain yang LEBIH BAWAH dari low yang gagal (Short: lebih atas)."""
         nonlocal pend
         sup = bias['sup']; a = L if sup else H; j = tt - N
-        c0 = bias['cand']
-        if c0 is not None and tt > c0:
-            lvl = a[c0]
-            if sup:
-                bad = (min(O[tt], C[tt]) if BS_SWEEP == 'body' else C[tt]) < lvl
-            else:
-                bad = (max(O[tt], C[tt]) if BS_SWEEP == 'body' else C[tt]) > lvl
-            if bad:                                                           # low ter-break oleh body, bukan di-sweep wick
+        # (1) candle sesudah candle sweep A harus engulfing
+        A = bias['touch']
+        if A is not None and tt == A + 1:
+            bias['touch'] = None; c0 = bias['cand']; e = tt
+            eng = ((C[e] > H[A]) and (L[e] > L[A])) if sup else ((C[e] < L[A]) and (H[e] < H[A]))
+            if eng:
                 if live:
-                    st['bs_cand_fail'] += 1
-                bias['floor'] = float(lvl); bias['cand'] = None
-        if j >= 0 and swing(sup, j, bias['ext_idx']):
-            c0 = bias['cand']
-            if c0 is None:
-                fl = bias['floor']
-                if fl is None or ((a[j] < fl) if sup else (a[j] > fl)):          # kandidat baru harus lebih bawah (Long) / lebih atas (Short) dari low yang gagal
-                    bias['cand'] = j; bias['floor'] = None
-            elif (a[j] < a[c0]) if sup else (a[j] > a[c0]):                     # wick candle swing j menembus kandidat tapi tidak ada candle yang close menembus = sweep valid
-                if live:
-                    st['bs_sweep'] += 1
-                e = j + 1                                                          # candle tepat sesudah candle sweep
-                if live and ((C[e] > H[j]) if sup else (C[e] < L[j])):          # engulfing: close body menembus ujung wick candle sweep
                     st['bs_engulf'] += 1
-                    lim = (O[e] + C[e]) / 2.0; slp = ((L[e] if sup else H[e]) if BS_SL == 'eng' else (L[j] if sup else H[j]) if BS_SL == 'wick' else (H[j] + L[j]) / 2.0)
+                    lim = (O[e] + C[e]) / 2.0; slp = ((L[e] if sup else H[e]) if BS_SL == 'eng' else (L[A] if sup else H[A]) if BS_SL == 'wick' else (H[A] + L[A]) / 2.0)
                     tp = max(bias['ext'], float(H[e])) if sup else min(bias['ext'], float(L[e]))
                     if pend is None and pos is None and ((tp > lim > slp) if sup else (tp < lim < slp)):
                         rr = abs(tp - lim) / abs(lim - slp)
                         pend = dict(sup=sup, limit=float(lim), sl=float(slp), tp=float(tp), rr=rr, t=tt,
-                                    info=dict(bias_kind=bias['kind'], bias_end=bias['end'], cand_ts=int(TS[c0]), cand_px=float(a[c0]), sw_ts=int(TS[j]), sw_lo=float(L[j]), sw_hi=float(H[j]),
+                                    info=dict(bias_kind=bias['kind'], bias_end=bias['end'], cand_ts=int(TS[c0]), cand_px=float(a[c0]), sw_ts=int(TS[A]), sw_lo=float(L[A]), sw_hi=float(H[A]),
                                               eng_ts=int(TS[e]), eng_o=float(O[e]), eng_c=float(C[e]), set_ts=int(TS[tt])))
                         st['bs_setup'] += 1
-                bias['cand'] = j
+                bias['cand'] = A                                       # low yang menyapu jadi kandidat berikutnya
+            else:
+                if live:
+                    st['bs_eng_fail'] += 1
+                bias['floor'] = float(a[c0]); bias['cand'] = None      # tidak engulfing = low gagal
+        # (2) candle yang pertama kali menyentuh kandidat
+        c0 = bias['cand']
+        if c0 is not None and bias['touch'] is None and tt > c0:
+            lvl = a[c0]
+            if (L[tt] <= lvl) if sup else (H[tt] >= lvl):
+                if sup:
+                    bad = (min(O[tt], C[tt]) if BS_SWEEP == 'body' else C[tt]) < lvl
+                else:
+                    bad = (max(O[tt], C[tt]) if BS_SWEEP == 'body' else C[tt]) > lvl
+                if bad:                                                   # close/body menembus = terbreak, bukan sweep wick
+                    if live:
+                        st['bs_cand_fail'] += 1
+                    bias['floor'] = float(lvl); bias['cand'] = None
+                else:
+                    if live:
+                        st['bs_sweep'] += 1
+                    bias['touch'] = tt                                    # tunggu candle berikutnya: harus engulfing
+        # (3) cari kandidat (swing low/high) baru
+        if bias['cand'] is None and bias['touch'] is None and j >= 0 and swing(sup, j, bias['ext_idx']):
+            fl = bias['floor']
+            if fl is None or ((a[j] < fl) if sup else (a[j] > fl)):          # kandidat baru harus lebih bawah (Long) / lebih atas (Short) dari low yang gagal
+                bias['cand'] = j; bias['floor'] = None
 
     def close_pos(p, t, px, why):
         gr = ((px - p['entry']) if p['sup'] else (p['entry'] - px)) / p['dist']
@@ -1001,7 +1015,7 @@ def biassweep_signals(symbol, TS, O, H, L, C, st):
         # (d) cari entry di dalam range bias (low terus dicari; low yang ter-break body gagal -> cari yang lebih bawah)
         if bias is not None:
             if (H[t] >= bias['ext']) if bias['sup'] else (L[t] <= bias['ext']):     # harga MENYENTUH titik tertinggi (Short: terendah) range -> pencarian low direset, cari low baru sesudah candle ini
-                bias['ext'] = float(max(bias['ext'], H[t]) if bias['sup'] else min(bias['ext'], L[t])); bias['ext_idx'] = t; bias['cand'] = None; bias['floor'] = None
+                bias['ext'] = float(max(bias['ext'], H[t]) if bias['sup'] else min(bias['ext'], L[t])); bias['ext_idx'] = t; bias['cand'] = None; bias['floor'] = None; bias['touch'] = None
                 st['bs_top_reset'] += 1
             cand_step(t, True)
         if _BS_TRACE is not None and _BS_TRACE[0] <= TS[t] <= _BS_TRACE[1]:                    # debug: BS_TRACE=awal,akhir (ms epoch UTC)
@@ -1484,7 +1498,7 @@ def _funnel_lines(f):
     if NS_MODE == 'bias_sweep':
         return [f"P valid : {f.get('bs_p',0)}", f"Struktur : {f.get('bs_struct',0)}", f"MSS (bias ditetapkan) : {f.get('bs_mss',0)}", f"Bias berubah/ditetapkan : {f.get('bs_bias',0)}", f"MSS searah bias (bias tetap, hanya ujung bias dipindah) : {f.get('bs_refresh',0)}",
                 f"Bias balik karena ujung MSS ter-break : {f.get('bs_flipback',0)}", f"Bias dikosongkan (ujung bias balik ter-break) : {f.get('bs_clear',0)}",
-                f"Pencarian direset (harga menyentuh titik tertinggi/terendah range) : {f.get('bs_top_reset',0)}", f"Low/high gagal (close/body menembus = terbreak, bukan sweep) : {f.get('bs_cand_fail',0)}", f"Sweep wick valid (tidak terbreak) : {f.get('bs_sweep',0)}", f"Sweep + engulfing : {f.get('bs_engulf',0)}", f"Limit dipasang : {f.get('bs_setup',0)}",
+                f"Pencarian direset (harga menyentuh titik tertinggi/terendah range) : {f.get('bs_top_reset',0)}", f"Low/high gagal (close/body menembus = terbreak, bukan sweep) : {f.get('bs_cand_fail',0)}", f"Candle pertama menyentuh low/high, tidak terbreak (sweep wick) : {f.get('bs_sweep',0)}", f"Low gagal (candle sesudah sentuhan tidak engulfing) : {f.get('bs_eng_fail',0)}", f"Sweep + engulfing : {f.get('bs_engulf',0)}", f"Limit dipasang : {f.get('bs_setup',0)}",
                 f"Limit batal (TP tersentuh dulu) : {f.get('bs_cancel_tp',0)}", f"Limit batal (bias berubah) : {f.get('bs_cancel_bias',0)}", f"Limit belum terisi di akhir data : {f.get('bs_pend_end',0)}", f"Limit terisi (jadi posisi) : {f.get('bs_fill',0)}"]
     if NS_MODE == 'mss_flip':
         return [f"P valid (swing {MF_N} kiri-kanan) : {f.get('mf_p',0)}", f"Struktur (P baru menembus P lama) : {f.get('mf_struct',0)}", f"MSS terbentuk : {f.get('mf_mss',0)}",
