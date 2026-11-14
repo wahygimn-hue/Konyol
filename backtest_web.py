@@ -1,11 +1,11 @@
 """
 backtest_web.py -- bias_sweep + MSS M5 (BS_ENTRY=mss_m5, DEFAULT; BS_ENTRY=eng = cara lama sweep+engulfing). Bias H1 & pencarian low/high H1 tetap sama. Bedanya konfirmasi entry (Long; Short = cermin):
   1) Low H1 kandidat tersentuh (cek di M5: low M5 <= low H1). Ujung bawah M5 (P) = low terendah M5 di dalam candle H1 pemilik low itu.
-  2) Swing = high tertinggi dari P sampai candle sentuh (BS_M5_SWFRAC=0 default: swing bebas tanpa aturan kiri-kanan; =1 wajib 1-1; P tetap wajib kiri-kanan). Swing itu harus di-break (close M5 menembus) = MSS.
+  2) Swing = high tertinggi dari P sampai candle sentuh (BS_M5_SWFRAC=1 default: swing wajib kiri-kanan 1-1; =0 swing bebas; P selalu wajib kiri-kanan). Swing itu harus di-break (close M5 menembus) = MSS.
   3) Struktur bearish: kalau P bawah ditembus P M5 baru (swing low 1-1 yang lebih rendah), swing dihitung ulang = high tertinggi (valid 1-1) antara P lama dan P baru; itu yang harus di-break.
   4) MSS -> entry LIMIT di swing yang di-break (BS_M5_ENTRY=limit_sw, default; market = di close MSS; limit batal kalau TP tersentuh dulu), SL ujung MSS (low terendah dari P terakhir s/d MSS) + pengaman BS_M5_SLBUF% (default 0.2), TP titik tertinggi range H1. Batal kalau harga sampai titik tertinggi range / ujung bias tersentuh / bias berubah.
   5) Kalau kena SL: bias TIDAK berakhir. Cari low H1 baru yang LEBIH BAWAH dari low yang tadi disentuh -> disentuh -> MSS M5 -> limit lagi. Bias hanya selesai kalau titik tertinggi range tercapai atau H1 melakukan MSS+struktur melawan bias (BS_M5_ENDBREAK=1 = cara lama, ujung bias tersentuh ikut mengakhiri).
-  SL: BS_M5_SLMODE=low_mss (default) = low M5 kiri-1 kanan-1 terdekat ke belakang dari candle break (harus di bawah entry), kalau tidak ada = ujung MSS; end = selalu ujung MSS. Lalu + BS_M5_SLBUF%.
+  SL: BS_M5_SLMODE=end (default) = ujung MSS; low_mss = low M5 kiri-1 kanan-1 terdekat ke belakang dari candle break (harus di bawah entry), kalau tidak ada = ujung MSS. Lalu + BS_M5_SLBUF%.
   Env: BS_ENTRY (mss_m5|eng), BS_M5_N (1), BS_M5_SLBUF (0).
 
 backtest_web.py -- MODE bias_sweep (NS_MODE=bias_sweep): TF struktur BS_TF (default 60 = H1), struktur hanya jadi BIAS, entry = limit setelah sweep + engulfing
@@ -140,10 +140,10 @@ BS_SL        = os.environ.get('BS_SL', 'wick').strip().lower()    # bias_sweep: 
 BS_ENTRY     = os.environ.get('BS_ENTRY', 'mss_m5').strip().lower()   # mss_m5 (default) = low H1 tersentuh -> cari MSS di M5 -> entry market | eng = cara lama (sweep + candle engulfing, limit 50% body)
 BS_M5_ENTRY  = os.environ.get('BS_M5_ENTRY', 'limit_sw').strip().lower()   # mss_m5: limit_sw (default) = limit di swing yang di-break | market = market di close MSS
 BS_M5_ENDBREAK = os.environ.get('BS_M5_ENDBREAK', '0') == '1'            # mss_m5: 1 = ujung bias tersentuh mengakhiri/membalik bias (cara lama); 0 (default) = TIDAK. Bias hanya selesai kalau titik tertinggi range tercapai atau H1 MSS+struktur melawan bias
-BS_M5_SWFRAC = os.environ.get('BS_M5_SWFRAC', '0') == '1'                # mss_m5: 1 = swing MSS wajib kiri-kanan N (fractal); 0 (default) = swing bebas = high tertinggi (Short: low terendah) antara P lama dan P baru. Aturan P (kiri-kanan N) tetap.
-BS_M5_SLMODE = os.environ.get('BS_M5_SLMODE', 'low_mss').strip().lower()   # mss_m5: low_mss (default) = SL di low M5 (kiri 1 kanan 1) terdekat ke belakang dari candle break, kalau tidak ada = ujung MSS | end = selalu ujung MSS
+BS_M5_SWFRAC = os.environ.get('BS_M5_SWFRAC', '1') == '1'                # mss_m5: 1 (default) = swing MSS wajib kiri-kanan N (fractal); 0 = swing bebas = high tertinggi (Short: low terendah) antara P lama dan P baru. Aturan P (kiri-kanan N) tetap.
+BS_M5_SLMODE = os.environ.get('BS_M5_SLMODE', 'end').strip().lower()   # mss_m5: end (default) = SL di ujung MSS | low_mss = SL di low M5 (kiri 1 kanan 1) terdekat ke belakang dari candle break, kalau tidak ada = ujung MSS
 BS_M5_N      = int(os.environ.get('BS_M5_N', 1))                   # mss_m5: P dan swing M5 = N candle kiri & N kanan
-BS_M5_SLBUF  = float(os.environ.get('BS_M5_SLBUF', 0.2))             # mss_m5: buffer SL di luar ujung MSS (dalam % harga, 0 = tepat di ujung)
+BS_M5_SLBUF  = float(os.environ.get('BS_M5_SLBUF', 0.0))             # mss_m5: buffer SL di luar ujung MSS (dalam % harga, 0 = tepat di ujung)
 BS_SWEEP     = os.environ.get('BS_SWEEP', 'close').strip().lower()  # bias_sweep: low dianggap TERBREAK (bukan sweep) kalau close candle menembus levelnya (close) | atau body menembus (body)
 _bt_ = os.environ.get('BS_TRACE', '').strip()
 _BS_TRACE = tuple(int(x) for x in _bt_.split(',')) if _bt_ else None   # debug saja
