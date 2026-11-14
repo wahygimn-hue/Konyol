@@ -1,10 +1,11 @@
 """
 backtest_web.py -- bias_sweep + MSS M5 (BS_ENTRY=mss_m5, DEFAULT; BS_ENTRY=eng = cara lama sweep+engulfing). Bias H1 & pencarian low/high H1 tetap sama. Bedanya konfirmasi entry (Long; Short = cermin):
   1) Low H1 kandidat tersentuh (cek di M5: low M5 <= low H1). Ujung bawah M5 (P) = low terendah M5 di dalam candle H1 pemilik low itu.
-  2) Swing = high tertinggi (valid 1 kiri-1 kanan) dari P sampai candle sentuh. Swing itu harus di-break (close M5 menembus) = MSS.
+  2) Swing = high tertinggi dari P sampai candle sentuh (BS_M5_SWFRAC=0 default: swing bebas tanpa aturan kiri-kanan; =1 wajib 1-1; P tetap wajib kiri-kanan). Swing itu harus di-break (close M5 menembus) = MSS.
   3) Struktur bearish: kalau P bawah ditembus P M5 baru (swing low 1-1 yang lebih rendah), swing dihitung ulang = high tertinggi (valid 1-1) antara P lama dan P baru; itu yang harus di-break.
-  4) MSS -> entry LIMIT di swing yang di-break (BS_M5_ENTRY=limit_sw, default; market = di close MSS; limit batal kalau TP tersentuh dulu), SL ujung MSS (low terendah dari P terakhir s/d MSS, + BS_M5_SLBUF%), TP titik tertinggi range H1. Batal kalau harga sampai titik tertinggi range / ujung bias tersentuh / bias berubah.
+  4) MSS -> entry LIMIT di swing yang di-break (BS_M5_ENTRY=limit_sw, default; market = di close MSS; limit batal kalau TP tersentuh dulu), SL ujung MSS (low terendah dari P terakhir s/d MSS) + pengaman BS_M5_SLBUF% (default 0.2), TP titik tertinggi range H1. Batal kalau harga sampai titik tertinggi range / ujung bias tersentuh / bias berubah.
   5) Kalau kena SL: bias TIDAK berakhir. Cari low H1 baru yang LEBIH BAWAH dari low yang tadi disentuh -> disentuh -> MSS M5 -> limit lagi. Bias hanya selesai kalau titik tertinggi range tercapai atau H1 melakukan MSS+struktur melawan bias (BS_M5_ENDBREAK=1 = cara lama, ujung bias tersentuh ikut mengakhiri).
+  SL: BS_M5_SLMODE=low_mss (default) = low M5 kiri-1 kanan-1 terdekat ke belakang dari candle break (harus di bawah entry), kalau tidak ada = ujung MSS; end = selalu ujung MSS. Lalu + BS_M5_SLBUF%.
   Env: BS_ENTRY (mss_m5|eng), BS_M5_N (1), BS_M5_SLBUF (0).
 
 backtest_web.py -- MODE bias_sweep (NS_MODE=bias_sweep): TF struktur BS_TF (default 60 = H1), struktur hanya jadi BIAS, entry = limit setelah sweep + engulfing
@@ -139,8 +140,10 @@ BS_SL        = os.environ.get('BS_SL', 'wick').strip().lower()    # bias_sweep: 
 BS_ENTRY     = os.environ.get('BS_ENTRY', 'mss_m5').strip().lower()   # mss_m5 (default) = low H1 tersentuh -> cari MSS di M5 -> entry market | eng = cara lama (sweep + candle engulfing, limit 50% body)
 BS_M5_ENTRY  = os.environ.get('BS_M5_ENTRY', 'limit_sw').strip().lower()   # mss_m5: limit_sw (default) = limit di swing yang di-break | market = market di close MSS
 BS_M5_ENDBREAK = os.environ.get('BS_M5_ENDBREAK', '0') == '1'            # mss_m5: 1 = ujung bias tersentuh mengakhiri/membalik bias (cara lama); 0 (default) = TIDAK. Bias hanya selesai kalau titik tertinggi range tercapai atau H1 MSS+struktur melawan bias
+BS_M5_SWFRAC = os.environ.get('BS_M5_SWFRAC', '0') == '1'                # mss_m5: 1 = swing MSS wajib kiri-kanan N (fractal); 0 (default) = swing bebas = high tertinggi (Short: low terendah) antara P lama dan P baru. Aturan P (kiri-kanan N) tetap.
+BS_M5_SLMODE = os.environ.get('BS_M5_SLMODE', 'low_mss').strip().lower()   # mss_m5: low_mss (default) = SL di low M5 (kiri 1 kanan 1) terdekat ke belakang dari candle break, kalau tidak ada = ujung MSS | end = selalu ujung MSS
 BS_M5_N      = int(os.environ.get('BS_M5_N', 1))                   # mss_m5: P dan swing M5 = N candle kiri & N kanan
-BS_M5_SLBUF  = float(os.environ.get('BS_M5_SLBUF', 0))             # mss_m5: buffer SL di luar ujung MSS (dalam % harga, 0 = tepat di ujung)
+BS_M5_SLBUF  = float(os.environ.get('BS_M5_SLBUF', 0.2))             # mss_m5: buffer SL di luar ujung MSS (dalam % harga, 0 = tepat di ujung)
 BS_SWEEP     = os.environ.get('BS_SWEEP', 'close').strip().lower()  # bias_sweep: low dianggap TERBREAK (bukan sweep) kalau close candle menembus levelnya (close) | atau body menembus (body)
 _bt_ = os.environ.get('BS_TRACE', '').strip()
 _BS_TRACE = tuple(int(x) for x in _bt_.split(',')) if _bt_ else None   # debug saja
@@ -988,6 +991,11 @@ def biassweep_signals(symbol, TS, O, H, L, C, st, M5=None):
     def m5_best_swing(sup, a_i, b_i):
         """Swing M5 (NM kiri & NM kanan tidak melebihi) TERBAIK di antara indeks a_i dan b_i (eksklusif). Long: swing HIGH tertinggi; Short: swing LOW terendah. None kalau tidak ada yang valid."""
         arr = Hm if sup else Lm; best = None
+        if not BS_M5_SWFRAC:
+            if b_i - a_i < 2:
+                return None
+            seg = arr[a_i + 1:b_i]
+            return a_i + 1 + int(np.argmax(seg) if sup else np.argmin(seg))
         for jj in range(a_i + 1, b_i):
             if _mf_swing_at(arr, jj, NM, not sup, 0):
                 if best is None or ((arr[jj] > arr[best]) if sup else (arr[jj] < arr[best])):
@@ -1023,15 +1031,20 @@ def biassweep_signals(symbol, TS, O, H, L, C, st, M5=None):
         if k['sw'] is not None and ((Cm[m] > Hm[k['sw']]) if sup else (Cm[m] < Lm[k['sw']])):     # MSS: close M5 menembus swing
             st['m5_mss'] += 1
             end_px = float(Lm[k['p']:m + 1].min()) if sup else float(Hm[k['p']:m + 1].max())
-            slp = end_px * (1 - BS_M5_SLBUF / 100.0) if sup else end_px * (1 + BS_M5_SLBUF / 100.0)
             ent = float(Cm[m]) if BS_M5_ENTRY == 'market' else float((Hm if sup else Lm)[k['sw']]); tp = float(bias['ext'])
+            ref_px = end_px; ref_i = None; sl_basis = 'ujung MSS'
+            if BS_M5_SLMODE == 'low_mss':                                              # cari ke belakang dari candle break: low M5 kiri-NM kanan-NM terdekat (harus di bawah entry)
+                for jj in range(m - NM, k['p'] - 1, -1):
+                    if jj >= NM and _mf_swing_at(Lm if sup else Hm, jj, NM, sup, 0) and ((Lm[jj] < ent) if sup else (Hm[jj] > ent)):
+                        ref_i = jj; ref_px = float((Lm if sup else Hm)[jj]); sl_basis = 'low M5'; break
+            slp = ref_px * (1 - BS_M5_SLBUF / 100.0) if sup else ref_px * (1 + BS_M5_SLBUF / 100.0)
             ok = (tp > ent > slp) if sup else (tp < ent < slp)
             if ok and pos is None and pend is None:
                 swp = k['sw']
                 info = dict(bias_kind=bias['kind'], bias_end=bias['end'], cand_ts=int(TS[k['c0']]), cand_px=k['lvl'], p0_ts=int(TSm[k['p0']]), touch_ts=int(TSm[k['T']]),
                             p_ts=int(TSm[k['p']]), p_px=float((Lm if sup else Hm)[k['p']]), n_newp=k['nP'], sw_ts=int(TSm[swp]), sw_px=float((Hm if sup else Lm)[swp]),
                             sw0_ts=(int(TSm[k['hist'][0][1]]) if k['hist'][0][1] is not None else None), sw0_px=(float((Hm if sup else Lm)[k['hist'][0][1]]) if k['hist'][0][1] is not None else None),
-                            mss_ts=int(TSm[m]), fill_ts=int(TSm[m]), try_no=k.get('try_no', 1),
+                            mss_ts=int(TSm[m]), fill_ts=int(TSm[m]), try_no=k.get('try_no', 1), sl_basis=sl_basis, sl_ref_px=ref_px, sl_ref_ts=(int(TSm[ref_i]) if ref_i is not None else int(TSm[int(np.argmin(Lm[k['p']:m + 1]) if sup else int(np.argmax(Hm[k['p']:m + 1]))) + k['p']])),
                             hist=[(int(TSm[a_]), float((Lm if sup else Hm)[a_]), (int(TSm[b_]) if b_ is not None else None), (float((Hm if sup else Lm)[b_]) if b_ is not None else None)) for a_, b_ in k['hist']])
                 rr_ = abs(tp - ent) / abs(ent - slp)
                 if BS_M5_ENTRY == 'market':
@@ -1551,7 +1564,7 @@ def _bsm_block(k, tr):
         o.append(f"   Struktur {'bearish' if long_ else 'bullish'} {i_} : P baru {_wib(pt)} @ {g(pp)} -> swing {_wib(st_)} @ {g(sp)}" if st_ else f"   Struktur {'bearish' if long_ else 'bullish'} {i_} : P baru {_wib(pt)} @ {g(pp)} -> swing tidak valid, pakai swing sebelumnya")
     o += [f"5. Swing yang di-break (MSS) : {_wib(tr['sw_ts'])} @ {g(tr['sw_px'])}", f"   P (ujung MSS) : {_wib(tr['p_ts'])} @ {g(tr['p_px'])} (P baru ke-{tr['n_newp']})",
           f"6. MSS (close M5 menembus swing) : {_wib(tr['mss_ts'])}",
-          *([f"Limit dipasang (setelah close MSS) : {_wib(tr['set_ts'])}", f"Limit terisi (candle M5) : {_wib(tr['fill_ts'])}", f"Entry (limit di swing yang di-break) : {g(tr['entry'])}"] if BS_M5_ENTRY != 'market' else [f"Entry (market, close MSS) : {g(tr['entry'])}"]), f"SL (ujung MSS) : {g(tr['sl'])}", f"TP ({'titik tertinggi' if long_ else 'titik terendah'} range) : {g(tr['tp'])}",
+          *([f"Limit dipasang (setelah close MSS) : {_wib(tr['set_ts'])}", f"Limit terisi (candle M5) : {_wib(tr['fill_ts'])}", f"Entry (limit di swing yang di-break) : {g(tr['entry'])}"] if BS_M5_ENTRY != 'market' else [f"Entry (market, close MSS) : {g(tr['entry'])}"]), f"SL acuan ({tr.get('sl_basis', 'ujung MSS')}) : {_wib(tr['sl_ref_ts'])} @ {g(tr['sl_ref_px'])}", f"SL (acuan{' + ' + format(BS_M5_SLBUF, 'g') + '%' if BS_M5_SLBUF else ''}) : {g(tr['sl'])}", f"TP ({'titik tertinggi' if long_ else 'titik terendah'} range) : {g(tr['tp'])}",
           f"RR rencana : 1:{tr['rr']:.2f}", f"Jarak SL : {tr['dist'] / tr['entry'] * 100:.2f}%",
           f"Exit waktu : {_wib(tr['exit_ts'])}", f"Exit harga : {g(tr['exit_px'])}", f"Lama posisi : {held // 60}j {held % 60}m",
           f"Balance setelah : ${tr['bal_after']:.2f}", ""]
