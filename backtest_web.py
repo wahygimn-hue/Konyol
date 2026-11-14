@@ -166,12 +166,10 @@ os.makedirs(CACHE_DIR, exist_ok=True)
 
 SYMBOLS = [
     
-    'ETHFIUSDT', 'FARTCOINUSDT', 'POLUSDT', '1000BONKUSDT', 'DYDXUSDT',
-    'ESPORTSUSDT', '1000FLOKIUSDT', 'HUSDT', 'BOMEUSDT', 'IMXUSDT',
-    'LABUSDT', 'IOTXUSDT', 'ADAUSDT', 'PLUMEUSDT', 'WUSDT',
-    'BATUSDT', 'PYTHUSDT', 'JUPUSDT', 'BERAUSDT', 'USUALUSDT',
-    'WIFUSDT', 'IOUSDT', 'BLURUSDT'
-
+    
+    'ETHFIUSDT', '1000BONKUSDT', 'DYDXUSDT', 'ESPORTSUSDT', '1000FLOKIUSDT',
+    'IMXUSDT', 'BATUSDT', 'ADAUSDT', 'PLUMEUSDT'
+    
 ]
 if os.environ.get('SYMBOLS', '').strip():
     SYMBOLS = [x.strip().upper() for x in os.environ['SYMBOLS'].split(',') if x.strip()]
