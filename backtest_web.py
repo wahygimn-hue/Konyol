@@ -7,6 +7,7 @@ backtest_web.py -- bias_sweep + MSS M5 (BS_ENTRY=mss_m5, DEFAULT; BS_ENTRY=eng =
   5) Kalau kena SL: bias TIDAK berakhir. Cari low H1 baru yang LEBIH BAWAH dari low yang tadi disentuh -> disentuh -> MSS M5 -> limit lagi. Bias hanya selesai kalau titik tertinggi range tercapai atau H1 melakukan MSS+struktur melawan bias (BS_M5_ENDBREAK=1 = cara lama, ujung bias tersentuh ikut mengakhiri).
   SL: BS_M5_SLMODE=end (default) = ujung MSS; low_mss = low M5 kiri-1 kanan-1 terdekat ke belakang dari candle break (harus di bawah entry), kalau tidak ada = ujung MSS. Lalu + BS_M5_SLBUF%.
   6) BS_M5_MSS2=1 (default): setelah MSS-1 JANGAN entry. Tunggu ujung MSS-1 tersentuh; swing MSS-2 = high tertinggi dari candle break MSS-1 s/d candle ujung tersentuh (kiri-kanan 1); kalau bikin struktur bearish lagi (P baru menembus P bawah) swing dihitung ulang. Close menembus swing = MSS-2 -> limit di swing itu, SL ujung MSS-2 + BS_M5_SLBUF% (default 0.3), TP titik tertinggi range.
+  SL default: ujung BODY candle ujung MSS (BS_M5_SLREF=body; wick = ujung wick), buffer BS_M5_SLBUF default 0.
   Env: BS_ENTRY (mss_m5|eng), BS_M5_N (1), BS_M5_SLBUF (0).
 
 backtest_web.py -- MODE bias_sweep (NS_MODE=bias_sweep): TF struktur BS_TF (default 60 = H1), struktur hanya jadi BIAS, entry = limit setelah sweep + engulfing
@@ -116,6 +117,7 @@ NS_MODE      = os.environ.get('NS_MODE', 'bias_sweep').strip().lower()      # to
 NS_ENTRY     = os.environ.get('NS_ENTRY', 'bo_bi').strip().lower()     # bo_bi (default) = tunggu ujung MSS break-out lalu break-in, entry market di break-in | mss = entry market langsung di close MSS
 NS_TP        = os.environ.get('NS_TP', 'far').strip().lower()          # far (default) = TP di pergerakan terjauh dari MSS sebelum ujung MSS break-out | rr = TP fix 1:RR
 NS_EXPIRE_MIN = int(os.environ.get('NS_EXPIRE_MIN', 60))             # kadaluarsa (menit) sejak break-out ujung MSS kalau belum break-in
+SEPARATE_COINS  = os.environ.get('SEPARATE_COINS', '1').strip() not in ('0', 'false', 'no')   # 1 (default) = backtest TERPISAH per koin, modal INITIAL_BALANCE sendiri-sendiri | 0 = satu akun gabungan (saldo, margin, slot dipakai bersama)
 ONE_POS_PER_DIR = os.environ.get('ONE_POS_PER_DIR', '1').strip() not in ('0', 'false', 'no')   # 1 posisi per arah per koin (sinyal searah dilewati selama posisi terbuka)
 MSS_WINDOW   = int(os.environ.get('MSS_WINDOW', 3000))            # mode mss_only: jendela pencarian MSS (candle M5) per percobaan
 NS_MIN_STRUCT = int(os.environ.get('NS_MIN_STRUCT', 2))              # minimal jumlah struktur sebelum MSS boleh (P1 tertembus P2 = 1, P2 tertembus P3 = 2). 0 = cara lama (MSS boleh tanpa struktur), 1 = cukup P1 tertembus P2
@@ -145,7 +147,8 @@ BS_M5_SWFRAC = os.environ.get('BS_M5_SWFRAC', '1') == '1'                # mss_m
 BS_M5_SLMODE = os.environ.get('BS_M5_SLMODE', 'end').strip().lower()   # mss_m5: end (default) = SL di ujung MSS | low_mss = SL di low M5 (kiri 1 kanan 1) terdekat ke belakang dari candle break, kalau tidak ada = ujung MSS
 BS_M5_N      = int(os.environ.get('BS_M5_N', 1))                   # mss_m5: P dan swing M5 = N candle kiri & N kanan
 BS_M5_MSS2   = os.environ.get('BS_M5_MSS2', '1') == '1'                 # mss_m5: 1 (default) = setelah MSS-1 JANGAN entry; tunggu ujung MSS tersentuh lalu cari MSS-2 (swing = high tertinggi dari awal break MSS-1 s/d ujung tersentuh; kalau bikin struktur bearish lagi, swing dihitung ulang) | 0 = entry setelah MSS-1
-BS_M5_SLBUF  = float(os.environ.get('BS_M5_SLBUF', 0.0))             # mss_m5: buffer SL di luar ujung MSS (dalam % harga, 0 = tepat di ujung)
+BS_M5_SLREF  = os.environ.get('BS_M5_SLREF', 'body').strip().lower()      # mss_m5 (SLMODE=end): body (default) = SL di ujung BODY candle ujung MSS (Long: min(open,close) candle low terendah; Short: max) | wick = di ujung wick
+BS_M5_SLBUF  = float(os.environ.get('BS_M5_SLBUF', 0))             # mss_m5: buffer SL di luar ujung MSS (dalam % harga, 0 = tepat di ujung)
 BS_SWEEP     = os.environ.get('BS_SWEEP', 'close').strip().lower()  # bias_sweep: low dianggap TERBREAK (bukan sweep) kalau close candle menembus levelnya (close) | atau body menembus (body)
 _bt_ = os.environ.get('BS_TRACE', '').strip()
 _BS_TRACE = tuple(int(x) for x in _bt_.split(',')) if _bt_ else None   # debug saja
@@ -165,11 +168,15 @@ CACHE_DIR = os.environ.get('CACHE_DIR', './data_cache')
 os.makedirs(CACHE_DIR, exist_ok=True)
 
 SYMBOLS = [
-    
-    
-    'ETHFIUSDT', '1000BONKUSDT', 'DYDXUSDT', 'ESPORTSUSDT', '1000FLOKIUSDT',
-    'IMXUSDT', 'BATUSDT', 'ADAUSDT', 'PLUMEUSDT'
-    
+    'PENDLEUSDT', 'PYTHUSDT', 'BLURUSDT', '1000BONKUSDT', 'WUSDT',
+    'USUALUSDT', 'ETHFIUSDT', 'LABUSDT', 'IOTAUSDT', '1000FLOKIUSDT',
+    'HBARUSDT', 'PLUMEUSDT', 'BERAUSDT', 'MASKUSDT', 'ESPORTSUSDT',
+    'IMXUSDT', 'CRVUSDT', 'ACHUSDT', 'FARTCOINUSDT', 'AEVOUSDT',
+    'ICPUSDT', 'ENAUSDT', 'ADAUSDT', 'WIFUSDT', 'DYDXUSDT',
+    'BATUSDT', 'LRCUSDT', 'IOUSDT', 'BOMEUSDT', 'OPUSDT',
+    'POPCATUSDT', 'WOOUSDT', 'STORJUSDT', 'ROSEUSDT', 'POWRUSDT',
+    'JUPUSDT', 'HUSDT', 'STRKUSDT', 'IOTXUSDT', 'MEWUSDT',
+    'VIRTUALUSDT', 'POLUSDT', 'CKBUSDT', 'ASTRUSDT'
 ]
 if os.environ.get('SYMBOLS', '').strip():
     SYMBOLS = [x.strip().upper() for x in os.environ['SYMBOLS'].split(',') if x.strip()]
@@ -197,6 +204,7 @@ _funnel = {}
 _monthly = []
 _avg_monthly_growth = 0.0
 _per_symbol = []
+_coin_res = []
 
 
 def _entry_desc():
@@ -1043,6 +1051,10 @@ def biassweep_signals(symbol, TS, O, H, L, C, st, M5=None):
             end_px = float(Lm[k['p']:m + 1].min()) if sup else float(Hm[k['p']:m + 1].max())
             ent = float(Cm[m]) if BS_M5_ENTRY == 'market' else float((Hm if sup else Lm)[k['sw']]); tp = float(bias['ext'])
             ref_px = end_px; ref_i = None; sl_basis = 'ujung MSS'
+            if BS_M5_SLMODE != 'low_mss':
+                ref_i = k['p'] + int(np.argmin(Lm[k['p']:m + 1]) if sup else np.argmax(Hm[k['p']:m + 1]))
+                if BS_M5_SLREF == 'body':
+                    ref_px = float(min(Om[ref_i], Cm[ref_i]) if sup else max(Om[ref_i], Cm[ref_i])); sl_basis = 'ujung body MSS'
             if BS_M5_SLMODE == 'low_mss':                                              # cari ke belakang dari candle break: low M5 kiri-NM kanan-NM terdekat (harus di bawah entry)
                 for jj in range(m - NM, k['p'] - 1, -1):
                     if jj >= NM and _mf_swing_at(Lm if sup else Hm, jj, NM, sup, 0) and ((Lm[jj] < ent) if sup else (Hm[jj] > ent)):
@@ -1475,11 +1487,11 @@ def simulate(cands):
     return trades, summ, bl
 
 
-def monthly_breakdown(trades):
+def monthly_breakdown(trades, start=None):
     by = {}
     for tr in sorted(trades, key=lambda x: x['exit_ts']):
         by.setdefault(_wib(tr['exit_ts'])[:7], []).append(tr)
-    rows = []; bal = INITIAL_BALANCE
+    rows = []; bal = INITIAL_BALANCE if start is None else start
     for mth, L in by.items():
         pr = sum(x['pnl'] for x in L); nw = sum(1 for x in L if _is_win(x))
         rows.append(dict(month=mth, start=bal, end=bal + pr, profit=pr, growth=(pr / bal * 100 if bal else 0.0),
@@ -1489,7 +1501,41 @@ def monthly_breakdown(trades):
     return rows, avg
 
 
-def per_symbol_breakdown(trades):
+def simulate_separate(cands, symbols=None):
+    """Backtest TERPISAH per koin: tiap koin punya akun sendiri (modal INITIAL_BALANCE, risk 1% dari saldo koin itu, margin/slot/posisi searah dihitung per koin). Hasil gabungan = penjumlahan akun-akun terpisah itu."""
+    by = {}
+    for cd in cands:
+        by.setdefault(cd['symbol'], []).append(cd)
+    syms = list(symbols) if symbols else []
+    for sy in by:
+        if sy not in syms:
+            syms.append(sy)
+    trades = []; bl = dict(open_same=0, slot=0, margin=0, terbuka=0); res = []
+    for sy in syms:
+        t, sm, b = simulate(by.get(sy, []))
+        mo, av = monthly_breakdown(t)
+        res.append(dict(symbol=sy, summ=sm, monthly=mo, avg=av, bl=b)); trades.extend(t)
+        for k_ in bl:
+            bl[k_] += b[k_]
+    trades.sort(key=lambda x: (x['entry_ts'], x['symbol']))
+    nt = len(trades); nw = sum(1 for x in trades if _is_win(x)); tot_r = sum(x['r'] for x in trades); nc = max(len(syms), 1)
+    fin = sum(r_['summ']['final_balance'] for r_ in res); modal = INITIAL_BALANCE * nc
+    summ = dict(n_trades=nt, n_win=nw, n_loss=nt - nw, wr=(nw / nt * 100 if nt else 0.0), total_r=tot_r, avg_r=(tot_r / nt if nt else 0.0),
+                avg_rr=(sum(x['rr'] for x in trades) / nt if nt else 0.0), fee_r=sum(x['fee_r'] for x in trades), gross_r=sum(x['r'] + x['fee_r'] for x in trades),
+                avg_dist_pct=(sum(x['dist'] / x['entry'] for x in trades) / nt * 100 if nt else 0.0), final_balance=fin, roi=(fin / modal - 1) * 100,
+                mdd=max([r_['summ']['mdd'] for r_ in res] + [0.0]), modal_total=modal, n_coins=nc)
+    return trades, summ, bl, res
+
+
+def per_symbol_breakdown(trades, coin_res=None):
+    if coin_res is not None:
+        rows = []
+        for r_ in coin_res:
+            sm = r_['summ']
+            rows.append(dict(symbol=r_['symbol'], n=sm['n_trades'], tp=sm['n_win'], sl=sm['n_loss'], wr=sm['wr'], total_r=sm['total_r'], profit=sm['final_balance'] - INITIAL_BALANCE,
+                             roi=sm['roi'], mdd=sm['mdd'], final=sm['final_balance'], fee_r=sm['fee_r'], gross_r=sm['gross_r'], avg_rr=sm['avg_rr']))
+        rows.sort(key=lambda r: -r['total_r'])
+        return rows
     by = {}
     for tr in trades:
         by.setdefault(tr['symbol'], []).append(tr)
@@ -1505,21 +1551,21 @@ def per_symbol_breakdown(trades):
 # RUN
 # ============================================================
 def _run():
-    global _phase, _trades, _summary, _funnel, _monthly, _avg_monthly_growth, _per_symbol
+    global _phase, _trades, _summary, _funnel, _monthly, _avg_monthly_growth, _per_symbol, _coin_res
     try:
         _log_msg(f"🚀 Backtest {NS_MODE} — {len(SYMBOLS)} koin, {BACKTEST_START_DATE} s/d {BACKTEST_END_DATE}")
         alur = ((f"TF {BS_TF}m: struktur P -> MSS = bias -> low tersentuh -> MSS di M5" if BS_ENTRY == 'mss_m5' else f"TF {BS_TF}m: struktur P -> MSS = bias -> sweep + engulfing di range") if NS_MODE == 'bias_sweep' else "M5 saja: struktur P -> swing di-break (MSS) -> flip saat MSS lawan" if NS_MODE == 'mss_flip' else "M5 saja: BOS besar (P ditembus P baru, swing low di-sweep wick, P baru di-break) -> rantai P dari ujung bawah -> swing low P tersentuh" if NS_MODE == 'fibo_bos' else "M5 saja, tanpa level -> cari MSS" if NS_MODE == 'mss_only' else "level = acuan -> tersentuh M5 -> MSS" if NS_MODE == 'touch' else
                 "break-out body -> MSS pertama (acuan) -> acuan tersentuh -> MSS kedua")
         _log_msg(f"   Mode {NS_MODE}: {'' if NS_MODE in ('mss_only', 'fibo_bos', 'mss_flip', 'bias_sweep') else f'level awal H1 (tanpa FVG, filter ujung wick {NS_LV_N} kiri-kanan) -> '}{alur} -> {_entry_desc()}. "
                  f"Risk {RISK_PCT*100:.1f}%/trade, leverage {LEVERAGE:g}x, slot {'tanpa batas' if MAX_CONCURRENT == float('inf') else int(MAX_CONCURRENT)}.")
-        all_c = []; tot = {}
+        all_c = []; tot = {}; done_syms = []
         for symbol in SYMBOLS:
             _log_msg(f"📊 {symbol}: fetch M5...")
             df = fetch_bybit_m5(symbol)
             if df is None or df.empty:
                 _log_msg(f"   ⚠ {symbol}: data kosong, skip."); continue
             cands, st = process_coin(symbol, df)
-            all_c.extend(cands)
+            all_c.extend(cands); done_syms.append(symbol)
             for k, v in st.items():
                 tot[k] = tot.get(k, 0) + v
             if NS_MODE == 'bias_sweep' and BS_ENTRY == 'mss_m5':
@@ -1531,14 +1577,20 @@ def _run():
             else:
               _log_msg(f"   ✅ {symbol}: {len(df):,} candle M5, {st['level']} level ({st['level_valid']} lolos filter), break-out {st['breakout']}, MSS1 {st['mss1']}, "
                        f"tersentuh {st['touch']}, sinyal {st['signal']} (kembar {st['dup']}) -> {len(cands)} kandidat entry.")
-        _log_msg(f"🧮 Simulasi gabungan ({len(all_c)} kandidat)...")
-        trades, summ, bl = simulate(all_c)
-        monthly, avg = monthly_breakdown(trades)
-        per_sym = per_symbol_breakdown(trades)
+        if SEPARATE_COINS:
+            _log_msg(f"🧮 Simulasi TERPISAH per koin ({len(all_c)} kandidat, modal ${INITIAL_BALANCE:g} per koin)...")
+            trades, summ, bl, coin_res = simulate_separate(all_c, done_syms)
+            monthly, avg = monthly_breakdown(trades, start=summ['modal_total'])
+            per_sym = per_symbol_breakdown(trades, coin_res)
+        else:
+            _log_msg(f"🧮 Simulasi gabungan ({len(all_c)} kandidat)...")
+            trades, summ, bl = simulate(all_c); coin_res = []
+            monthly, avg = monthly_breakdown(trades)
+            per_sym = per_symbol_breakdown(trades)
         funnel = dict(tot); funnel.update(bl)
         with _lock:
             _trades[:] = trades; _summary.clear(); _summary.update(summ); _funnel.clear(); _funnel.update(funnel)
-            _monthly[:] = monthly; _avg_monthly_growth = avg; _per_symbol[:] = per_sym
+            _monthly[:] = monthly; _avg_monthly_growth = avg; _per_symbol[:] = per_sym; _coin_res = coin_res
             _phase = 'done'
         _log_msg(f"✅ SELESAI. {summ['n_trades']} trade, WR {summ['wr']:.1f}%, Total R {summ['total_r']:.2f}, "
                  f"Balance akhir ${summ['final_balance']:.2f} (ROI {summ['roi']:+.1f}%), max DD {summ['mdd']:.1f}%")
@@ -1749,22 +1801,35 @@ def _funnel_lines(f):
 
 def _ringkasan_txt():
     with _lock:
-        s = dict(_summary); f = dict(_funnel); mo = list(_monthly); avg = _avg_monthly_growth; ps = list(_per_symbol); phase = _phase
+        s = dict(_summary); f = dict(_funnel); mo = list(_monthly); avg = _avg_monthly_growth; ps = list(_per_symbol); phase = _phase; cres = list(_coin_res)
     if phase != 'done':
         return f'Backtest belum selesai (status: {phase}).\n'.encode('utf-8')
-    o = [f"RINGKASAN BACKTEST {NS_MODE}", f"Periode : {BACKTEST_START_DATE} s/d {BACKTEST_END_DATE}", f"Koin : {len(SYMBOLS)}",
+    o = [f"RINGKASAN BACKTEST {NS_MODE}", f"Periode : {BACKTEST_START_DATE} s/d {BACKTEST_END_DATE}", f"Koin : {len(SYMBOLS)}", *([f"Mode akun : TERPISAH per koin, modal ${INITIAL_BALANCE:g} masing-masing (total modal ${s.get('modal_total', 0):.0f}); angka di bawah = penjumlahan semua koin, Max drawdown = terburuk di antara koin"] if SEPARATE_COINS else []),
          f"Total trade : {s['n_trades']}", f"Menang / Kalah : {s['n_win']} / {s['n_loss']}", f"Win rate : {s['wr']:.1f}%",
-         f"Total R : {s['total_r']:.2f}", f"Rata-rata R : {s['avg_r']:.2f}", (f"Total R kotor (sebelum fee) : {s.get('gross_r',0):.2f}" if NS_MODE in ('mss_flip', 'bias_sweep') else f"Rata-rata RR target : 1:{s.get('avg_rr',0):.2f}"), (f"Total fee : -{s.get('fee_r',0):.2f}R" if NS_MODE in ('mss_flip', 'bias_sweep') else ""), (f"Rata-rata jarak SL : {s.get('avg_dist_pct',0):.2f}% dari entry" if NS_MODE in ('mss_flip', 'bias_sweep') else ""), f"Balance awal : ${INITIAL_BALANCE:.2f}",
+         f"Total R : {s['total_r']:.2f}", f"Rata-rata R : {s['avg_r']:.2f}", (f"Total R kotor (sebelum fee) : {s.get('gross_r',0):.2f}" if NS_MODE in ('mss_flip', 'bias_sweep') else f"Rata-rata RR target : 1:{s.get('avg_rr',0):.2f}"), (f"Total fee : -{s.get('fee_r',0):.2f}R" if NS_MODE in ('mss_flip', 'bias_sweep') else ""), (f"Rata-rata jarak SL : {s.get('avg_dist_pct',0):.2f}% dari entry" if NS_MODE in ('mss_flip', 'bias_sweep') else ""), f"Balance awal : ${s.get('modal_total', INITIAL_BALANCE) if SEPARATE_COINS else INITIAL_BALANCE:.2f}" + (" (total semua koin)" if SEPARATE_COINS else ""),
          f"Balance akhir : ${s['final_balance']:.2f}", f"ROI : {s['roi']:+.1f}%", f"Max drawdown : {s['mdd']:.1f}%",
          f"Rata-rata growth per bulan : {avg:+.2f}%", "", "FUNNEL",
          ] + _funnel_lines(f) + [
          ] + ([] if NS_MODE in ('fibo_bos', 'mss_flip', 'bias_sweep') else [f"Dibuang: TP tidak valid (di sisi salah dari entry) : {f.get('tp_invalid',0)}"] if NS_MODE == 'mss_only' else [f"Ujung MSS tak pernah break-out : {f.get('no_bo',0)}", f"Kadaluarsa (tak break-in dlm {NS_EXPIRE_MIN} menit) : {f.get('expired',0)}", f"Dibuang: entry sudah lewat titik TP terjauh : {f.get('tp_invalid',0)}"]) + [
          f"Sinyal kembar dilewati : {f.get('dup',0)}", f"Dilewati posisi searah masih terbuka : {f.get('open_same',0)}",
          f"Dilewati batas slot : {f.get('slot',0)}", f"Dilewati margin kurang : {f.get('margin',0)}",
-         f"Posisi belum selesai di akhir data : {f.get('terbuka',0)}", "", "PER BULAN (basis waktu exit, WIB)"]
+         f"Posisi belum selesai di akhir data : {f.get('terbuka',0)}", "", "PER BULAN (basis waktu exit, WIB" + ("; gabungan semua koin, balance = total semua akun)" if SEPARATE_COINS else ")")]
     for m in mo:
         o += [f"Bulan : {m['month']}", f"Trade : {m['n']}", f"Win rate : {m['wr']:.1f}%", f"Total R : {m['total_r']:.2f}",
               f"Balance awal : ${m['start']:.2f}", f"Balance akhir : ${m['end']:.2f}", f"Growth : {m['growth']:+.2f}%", ""]
+    if SEPARATE_COINS and cres:
+        o += [f"BACKTEST TERPISAH PER KOIN (urut total R, modal ${INITIAL_BALANCE:g} masing-masing)", ""]
+        cm = {r_['symbol']: r_ for r_ in cres}
+        for r in ps:
+            c_ = cm[r['symbol']]; sm = c_['summ']
+            o += [f"Coin : {r['symbol']}", f"Modal awal : ${INITIAL_BALANCE:g}", f"Trade : {sm['n_trades']}", f"Menang / Kalah : {sm['n_win']} / {sm['n_loss']}", f"Win rate : {sm['wr']:.1f}%",
+                  f"Total R : {sm['total_r']:.2f}", f"Total R kotor (sebelum fee) : {sm['gross_r']:.2f}", f"Total fee : -{sm['fee_r']:.2f}R", f"Rata-rata RR rencana : 1:{sm['avg_rr']:.2f}",
+                  f"Balance akhir : ${sm['final_balance']:.2f}", f"ROI : {sm['roi']:+.1f}%", f"Max drawdown : {sm['mdd']:.1f}%", f"Rata-rata growth per bulan : {c_['avg']:+.2f}%",
+                  f"Dilewati batas slot / margin / searah : {c_['bl']['slot']} / {c_['bl']['margin']} / {c_['bl']['open_same']}"]
+            for m in c_['monthly']:
+                o += [f"   Bulan {m['month']} : {m['n']} trade, WR {m['wr']:.0f}%, R {m['total_r']:+.2f}, balance ${m['start']:.2f} -> ${m['end']:.2f} ({m['growth']:+.2f}%)"]
+            o += [""]
+        return '\n'.join(o).encode('utf-8')
     o += ["PER KOIN (urut total R)"]
     for r in ps:
         o += [f"Coin : {r['symbol']}", f"Trade : {r['n']}", f"Menang / Kalah : {r['tp']} / {r['sl']}", f"Win rate : {r['wr']:.1f}%",
@@ -1787,7 +1852,7 @@ def _render_html():
                f"<div class='note'>Level awal H1 (tanpa FVG, ujung wick {NS_LV_N} kiri-kanan) = <b>acuan</b> → tersentuh di M5 → cari <b>MSS</b> → "
                if NS_MODE == 'touch' else
                f"<div class='note'>Level awal H1 (tanpa FVG, ujung wick {NS_LV_N} kiri-kanan) → break-out body → <b>MSS pertama</b> (acuan) → acuan tersentuh → <b>MSS kedua</b> → ")
-            + f"{_entry_desc()}. Risk {RISK_PCT*100:.1f}%/trade (compounding), leverage {LEVERAGE:g}x.</div>"]
+            + f"{_entry_desc()}. Risk {RISK_PCT*100:.1f}%/trade (compounding), leverage {LEVERAGE:g}x. {'Backtest TERPISAH per koin, modal masing-masing.' if SEPARATE_COINS else 'Akun gabungan.'}</div>"]
     if phase == 'done' and s:
         cls = 'pos' if s['total_r'] >= 0 else 'neg'
         body.append(f"<div class='cards'><div class='c'><span>Trade</span><b>{s['n_trades']}</b></div>"
@@ -1819,10 +1884,16 @@ def _render_html():
             c_ = 'pos' if m['profit'] >= 0 else 'neg'
             body.append(f"<tr><td>{m['month']}</td><td>{m['n']}</td><td>{m['wr']:.0f}%</td><td class='{c_}'>{m['total_r']:+.2f}</td><td>${m['start']:.2f}</td><td>${m['end']:.2f}</td><td class='{c_}'>{m['growth']:+.2f}%</td></tr>")
         body.append("</table>")
-        body.append("<h3>Per Koin</h3><table><tr><th>Koin</th><th>Trade</th><th>Menang/Kalah</th><th>WR</th><th>R</th><th>Profit</th></tr>")
-        for r in ps:
-            c_ = 'pos' if r['total_r'] >= 0 else 'neg'
-            body.append(f"<tr><td>{r['symbol']}</td><td>{r['n']}</td><td>{r['tp']}/{r['sl']}</td><td>{r['wr']:.0f}%</td><td class='{c_}'>{r['total_r']:+.2f}</td><td class='{c_}'>${r['profit']:.2f}</td></tr>")
+        if SEPARATE_COINS and ps and 'roi' in ps[0]:
+            body.append(f"<h3>Backtest terpisah per koin (modal ${INITIAL_BALANCE:g} masing-masing)</h3><table><tr><th>Koin</th><th>Trade</th><th>Menang/Kalah</th><th>WR</th><th>R</th><th>Saldo akhir</th><th>ROI</th><th>Max DD</th></tr>")
+            for r in ps:
+                c_ = 'pos' if r['total_r'] >= 0 else 'neg'
+                body.append(f"<tr><td>{r['symbol']}</td><td>{r['n']}</td><td>{r['tp']}/{r['sl']}</td><td>{r['wr']:.0f}%</td><td class='{c_}'>{r['total_r']:+.2f}</td><td class='{c_}'>${r['final']:.2f}</td><td class='{c_}'>{r['roi']:+.1f}%</td><td>{r['mdd']:.1f}%</td></tr>")
+        else:
+            body.append("<h3>Per Koin</h3><table><tr><th>Koin</th><th>Trade</th><th>Menang/Kalah</th><th>WR</th><th>R</th><th>Profit</th></tr>")
+            for r in ps:
+                c_ = 'pos' if r['total_r'] >= 0 else 'neg'
+                body.append(f"<tr><td>{r['symbol']}</td><td>{r['n']}</td><td>{r['tp']}/{r['sl']}</td><td>{r['wr']:.0f}%</td><td class='{c_}'>{r['total_r']:+.2f}</td><td class='{c_}'>${r['profit']:.2f}</td></tr>")
         body.append("</table>")
     body.append("<h3>Log</h3><pre>" + '\n'.join(log_cp).replace('<', '&lt;') + "</pre>")
     css = ("body{font-family:-apple-system,Segoe UI,Roboto,sans-serif;background:#0f1419;color:#e6e6e6;margin:0;padding:14px;max-width:900px}"
