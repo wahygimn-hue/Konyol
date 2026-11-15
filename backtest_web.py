@@ -145,11 +145,11 @@ BS_ENTRY     = os.environ.get('BS_ENTRY', 'mss_m5').strip().lower()   # mss_m5 (
 BS_M5_ENTRY  = os.environ.get('BS_M5_ENTRY', 'limit_sw').strip().lower()   # mss_m5: limit_sw (default) = limit di swing yang di-break | market = market di close MSS
 BS_M5_ENDBREAK = os.environ.get('BS_M5_ENDBREAK', '0') == '1'            # mss_m5: 1 = ujung bias tersentuh mengakhiri/membalik bias (cara lama); 0 (default) = TIDAK. Bias hanya selesai kalau titik tertinggi range tercapai atau H1 MSS+struktur melawan bias
 BS_M5_SWFRAC = os.environ.get('BS_M5_SWFRAC', '1') == '1'                # mss_m5: 1 (default) = swing MSS wajib kiri-kanan N (fractal); 0 = swing bebas = high tertinggi (Short: low terendah) antara P lama dan P baru. Aturan P (kiri-kanan N) tetap.
-BS_M5_SLMODE = os.environ.get('BS_M5_SLMODE', 'end').strip().lower()   # mss_m5: end (default) = SL di ujung MSS | low_mss = SL di low M5 (kiri 1 kanan 1) terdekat ke belakang dari candle break, kalau tidak ada = ujung MSS
+BS_M5_SLMODE = os.environ.get('BS_M5_SLMODE', 'low_mss').strip().lower()   # mss_m5: end (default) = SL di ujung MSS | low_mss = SL di low M5 (kiri 1 kanan 1) terdekat ke belakang dari candle break, kalau tidak ada = ujung MSS
 BS_M5_N      = int(os.environ.get('BS_M5_N', 1))                   # mss_m5: P dan swing M5 = N candle kiri & N kanan
 BS_M5_MSS2   = os.environ.get('BS_M5_MSS2', '1') == '1'                 # mss_m5: 1 (default) = setelah MSS-1 JANGAN entry; tunggu ujung MSS tersentuh lalu cari MSS-2 (swing = high tertinggi dari awal break MSS-1 s/d ujung tersentuh; kalau bikin struktur bearish lagi, swing dihitung ulang) | 0 = entry setelah MSS-1
 BS_M5_SLREF  = os.environ.get('BS_M5_SLREF', 'wick').strip().lower()      # mss_m5 (SLMODE=end): wick (default) = SL di ujung wick MSS | body = di ujung BODY candle ujung MSS (Long: min(open,close) candle low terendah; Short: max)
-BS_M5_MINRR  = float(os.environ.get('BS_M5_MINRR', 2))                     # mss_m5: RR rencana minimum (entry limit, SL, TP). Di bawah ini TIDAK trade (limit tidak dipasang). 0 = tanpa filter
+BS_M5_MINRR  = float(os.environ.get('BS_M5_MINRR', 0))                     # mss_m5: RR rencana minimum (entry limit, SL, TP). Di bawah ini TIDAK trade (limit tidak dipasang). 0 = tanpa filter
 BS_M5_SLBUF  = float(os.environ.get('BS_M5_SLBUF', 0))             # mss_m5: buffer SL di luar ujung MSS (dalam % harga, 0 = tepat di ujung)
 BS_SWEEP     = os.environ.get('BS_SWEEP', 'close').strip().lower()  # bias_sweep: low dianggap TERBREAK (bukan sweep) kalau close candle menembus levelnya (close) | atau body menembus (body)
 _bt_ = os.environ.get('BS_TRACE', '').strip()
