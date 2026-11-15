@@ -11,6 +11,7 @@ backtest_web.py -- bias_sweep + MSS M5 (BS_ENTRY=mss_m5, DEFAULT; BS_ENTRY=eng =
   RR: hanya trade kalau RR rencana (limit->TP : limit->SL) >= BS_M5_MINRR (default 2). Di bawah itu limit tidak dipasang, low dianggap terpakai, cari low yang lebih bawah.
   FIBONACCI (BS_FIB=1 default): range pada struktur H1. 100% = ujung bawah struktur H1 terbaru (P baru yang menembus P lama sesudah bias; kalau belum ada = ujung bias), 0% = titik tertinggi range (Short: terendah). Struktur baru terbentuk -> 100% pindah ke low baru (range melebar). Low (kandidat) hanya dicari/dipakai kalau kedalamannya >= BS_FIB_DEPTH (0.5 = 50% range).
   Default sekarang: MSS satu kali (BS_M5_MSS2=0), tanpa filter RR (BS_M5_MINRR=0), SL ujung wick MSS buffer 0.
+  WARM-UP: BS_WARMUP=100 candle H1 pertama tiap koin tidak ada trade. Fibonacci default 61.8% (BS_FIB_DEPTH).
   Env: BS_ENTRY (mss_m5|eng), BS_M5_N (1), BS_M5_SLBUF (0).
 
 backtest_web.py -- MODE bias_sweep (NS_MODE=bias_sweep): TF struktur BS_TF (default 60 = H1), struktur hanya jadi BIAS, entry = limit setelah sweep + engulfing
@@ -79,7 +80,7 @@ Aturan lain: sinyal kembar (arah + candle MSS sama) dihitung sekali; sinyal dile
 Risk RISK_PCT dari balance (compounding, 1 akun bersama semua koin), fee masuk FEE_ENTRY_PCT + keluar FEE_EXIT_PCT.
 
 Deploy Railway: Start command -> python backtest_web.py ; buka domain Railway.
-Endpoint: /  (dashboard) | /trades.txt (satu blok per trade, satu field per baris) | /ringkasan.txt | /logs
+Endpoint: /  (dashboard) | /trades.txt (DOWNLOAD; satu blok per trade, satu field per baris; ?view=1 = lihat di browser) | /ringkasan.txt (download; ?view=1) | /logs
 Env: SYMBOLS (mis. FARTCOINUSDT,ETHFIUSDT), BACKTEST_START_DATE, BACKTEST_END_DATE, RR (3), RISK_PCT, INITIAL_BALANCE,
 FEE_ENTRY_PCT, FEE_EXIT_PCT, LEVERAGE, MARGIN_USAGE_CAP, MAX_CONCURRENT (kosong/0 = tanpa batas),
 NS_MODE (fibo_bos|touch|breakout_acuan|mss_only), FB_ENTRY_DEPTH (0.786), FB_TP_MODE (body|ext), FB_P_MODE (pairs|chain), FB_BREAK_BODY (1), FB_SW_EQUAL (valid|merge|invalid), FB_TRACK_MAX, FB_TRACK_CAP, FB_TP_EXT (0.15), FB_PAIR_MAX (500), NS_MIN_STRUCT (2), NS_BOS (1; hanya mss_only), NS_TP (far|rr|struct1), NS_STRUCT_LOOKBACK (1000), ONE_POS_PER_DIR (1; 0 = boleh banyak posisi searah), MSS_WINDOW (3000), NS_ENTRY (bo_bi|mss), NS_TP (far|rr), NS_EXPIRE_MIN (60), NS_LV_N (5), NS_LV_EQUAL (valid), NS_P_SWING (1), NS_MSS_SWING (1), NS_LOOKBACK (100), NS_P_EQUAL / NS_SW_EQUAL (merge), NS_MSS_REF (range).
@@ -150,6 +151,7 @@ BS_M5_SWFRAC = os.environ.get('BS_M5_SWFRAC', '1') == '1'                # mss_m
 BS_M5_SLMODE = os.environ.get('BS_M5_SLMODE', 'end').strip().lower()   # mss_m5: end (default) = SL di ujung MSS | low_mss = SL di low M5 (kiri 1 kanan 1) terdekat ke belakang dari candle break, kalau tidak ada = ujung MSS
 BS_FIB       = os.environ.get('BS_FIB', '1') == '1'                       # mss_m5: Fibonacci pada struktur H1. 100% = ujung bawah struktur H1 terbaru (P baru menembus P lama; Short: ujung atas), 0% = titik tertinggi (Short: terendah). Low hanya dicari di kedalaman >= BS_FIB_DEPTH
 BS_FIB_DEPTH = float(os.environ.get('BS_FIB_DEPTH', 0.618))                 # kedalaman minimum low (0.5 = 50% range)
+BS_WARMUP    = int(os.environ.get('BS_WARMUP', 100))                      # mss_m5: N candle H1 pertama tiap koin TIDAK boleh ada trade (data awal, pergerakan kecil). Struktur/bias tetap dihitung; low yang tersentuh saat warm-up dianggap terpakai
 BS_M5_N      = int(os.environ.get('BS_M5_N', 1))                   # mss_m5: P dan swing M5 = N candle kiri & N kanan
 BS_M5_MSS2   = os.environ.get('BS_M5_MSS2', '0') == '1'                 # mss_m5: 1 (default) = setelah MSS-1 JANGAN entry; tunggu ujung MSS tersentuh lalu cari MSS-2 (swing = high tertinggi dari awal break MSS-1 s/d ujung tersentuh; kalau bikin struktur bearish lagi, swing dihitung ulang) | 0 = entry setelah MSS-1
 BS_M5_SLREF  = os.environ.get('BS_M5_SLREF', 'wick').strip().lower()      # mss_m5 (SLMODE=end): wick (default) = SL di ujung wick MSS | body = di ujung BODY candle ujung MSS (Long: min(open,close) candle low terendah; Short: max)
@@ -908,7 +910,7 @@ def biassweep_signals(symbol, TS, O, H, L, C, st, M5=None):
     m5mode = (BS_ENTRY == 'mss_m5' and M5 is not None and BS_TF > 5)
     if m5mode:
         TSm, Om, Hm, Lm, Cm = M5; NM = BS_M5_N
-    for k in ('bs_p', 'bs_struct', 'bs_mss', 'bs_bias', 'bs_flipback', 'bs_clear', 'bs_sweep', 'bs_engulf', 'bs_setup', 'bs_cancel_tp', 'bs_cancel_bias', 'bs_fill', 'bs_pend_end', 'bs_cand_fail', 'bs_top_reset', 'bs_refresh', 'bs_eng_fail', 'bs_eng_wick', 'bs_pm', 'bs_pm_ok', 'bs_pm_fail', 'bs_pm_cancel', 'm5_touch', 'm5_touch_busy', 'm5_mss1', 'm5_wait_touch', 'm5_rr_skip', 'fib_skip_touch', 'm5_newp', 'm5_noswing', 'm5_mss', 'm5_mss_skip', 'm5_cancel_top', 'm5_cancel_end', 'm5_cancel_bias'):
+    for k in ('bs_p', 'bs_struct', 'bs_mss', 'bs_bias', 'bs_flipback', 'bs_clear', 'bs_sweep', 'bs_engulf', 'bs_setup', 'bs_cancel_tp', 'bs_cancel_bias', 'bs_fill', 'bs_pend_end', 'bs_cand_fail', 'bs_top_reset', 'bs_refresh', 'bs_eng_fail', 'bs_eng_wick', 'bs_pm', 'bs_pm_ok', 'bs_pm_fail', 'bs_pm_cancel', 'm5_touch', 'm5_touch_busy', 'm5_mss1', 'm5_wait_touch', 'm5_rr_skip', 'fib_skip_touch', 'warm_skip', 'm5_newp', 'm5_noswing', 'm5_mss', 'm5_mss_skip', 'm5_cancel_top', 'm5_cancel_end', 'm5_cancel_bias'):
         st.setdefault(k, 0)
     new_chain = lambda reset: dict(reset=reset, p=None, first=None, prev=None, ns=0, sw=None, sw_px=None)
     ch = {True: new_chain(0), False: new_chain(0)}
@@ -1131,6 +1133,12 @@ def biassweep_signals(symbol, TS, O, H, L, C, st, M5=None):
                     if (Lm[m] <= pos['sl']) if sup else (Hm[m] >= pos['sl']):
                         close_pos(pos, m, pos['sl'], 'SL'); pos = None
             if bias is None:
+                continue
+            if t < BS_WARMUP:                                                          # warm-up: belum boleh ada trade
+                if bias['cand'] is not None and bias['sup'] is not None:
+                    lv_ = (L if bias['sup'] else H)[bias['cand']]
+                    if (Lm[m] <= lv_) if bias['sup'] else (Hm[m] >= lv_):
+                        bias['floor'] = float(lv_); bias['cand'] = None; st['warm_skip'] += 1
                 continue
             if trk is None and bias['cand'] is not None and bias['sup'] is not None:
                 sup = bias['sup']; c0 = bias['cand']; lvl = (L if sup else H)[c0]
@@ -1803,7 +1811,7 @@ def _funnel_lines(f):
                 f"Bias balik karena ujung MSS ter-break : {f.get('bs_flipback',0)}", f"Bias dikosongkan : {f.get('bs_clear',0)}", f"Pencarian direset (harga menyentuh titik tertinggi/terendah range) : {f.get('bs_top_reset',0)}",
                 f"Low/high H1 tersentuh di M5 : {f.get('m5_touch',0)}", f"P baru M5 (P bawah ditembus, swing dihitung ulang) : {f.get('m5_newp',0)}", f"Sentuhan tanpa swing awal valid : {f.get('m5_noswing',0)}",
                 f"Batal: harga sampai titik tertinggi/terendah range : {f.get('m5_cancel_top',0)}", f"Batal: ujung bias tersentuh : {f.get('m5_cancel_end',0)}", f"Low tersentuh saat posisi/limit masih ada (dilewati, cari low lebih bawah) : {f.get('m5_touch_busy',0)}", f"Batal: bias berubah : {f.get('m5_cancel_bias',0)}",
-                f"Low tersentuh tapi di atas {BS_FIB_DEPTH * 100:g}% range Fibonacci (dilewati) : {f.get('fib_skip_touch',0)}", f"MSS-1 M5 terbentuk (tunggu ujung MSS-1) : {f.get('m5_mss1',0)}", f"Ujung MSS-1 tersentuh (cari MSS-2) : {f.get('m5_wait_touch',0)}", f"MSS M5 final terbentuk : {f.get('m5_mss',0)}", f"Limit dipasang : {f.get('bs_setup',0)}", f"Limit batal (TP tersentuh dulu) : {f.get('bs_cancel_tp',0)}", f"Limit belum terisi di akhir data : {f.get('bs_pend_end',0)}", f"MSS dibuang: RR rencana di bawah 1:{BS_M5_MINRR:g} (tidak trade) : {f.get('m5_rr_skip',0)}", f"MSS dibuang (TP/SL tidak valid atau posisi masih terbuka) : {f.get('m5_mss_skip',0)}", f"Entry market (jadi posisi) : {f.get('bs_fill',0)}"]
+                f"Low tersentuh saat warm-up ({BS_WARMUP} candle H1 pertama, tidak trade) : {f.get('warm_skip',0)}", f"Low tersentuh tapi di atas {BS_FIB_DEPTH * 100:g}% range Fibonacci (dilewati) : {f.get('fib_skip_touch',0)}", f"MSS-1 M5 terbentuk (tunggu ujung MSS-1) : {f.get('m5_mss1',0)}", f"Ujung MSS-1 tersentuh (cari MSS-2) : {f.get('m5_wait_touch',0)}", f"MSS M5 final terbentuk : {f.get('m5_mss',0)}", f"Limit dipasang : {f.get('bs_setup',0)}", f"Limit batal (TP tersentuh dulu) : {f.get('bs_cancel_tp',0)}", f"Limit belum terisi di akhir data : {f.get('bs_pend_end',0)}", f"MSS dibuang: RR rencana di bawah 1:{BS_M5_MINRR:g} (tidak trade) : {f.get('m5_rr_skip',0)}", f"MSS dibuang (TP/SL tidak valid atau posisi masih terbuka) : {f.get('m5_mss_skip',0)}", f"Entry market (jadi posisi) : {f.get('bs_fill',0)}"]
     if NS_MODE == 'bias_sweep':
         return [f"P valid : {f.get('bs_p',0)}", f"Struktur : {f.get('bs_struct',0)}", f"MSS (semua) : {f.get('bs_mss',0)}", f"MSS menunggu struktur searah (bias belum berubah) : {f.get('bs_pm',0)}", f"  jadi bias setelah ada struktur searah : {f.get('bs_pm_ok',0)}", f"  gagal, ujung MSS ter-break sebelum ada struktur : {f.get('bs_pm_fail',0)}", f"  dibatalkan MSS searah bias : {f.get('bs_pm_cancel',0)}", f"Bias berubah/ditetapkan : {f.get('bs_bias',0)}", f"MSS searah bias (bias tetap, hanya ujung bias dipindah) : {f.get('bs_refresh',0)}",
                 f"Bias balik karena ujung MSS ter-break : {f.get('bs_flipback',0)}", f"Bias dikosongkan (ujung bias balik ter-break) : {f.get('bs_clear',0)}",
@@ -1895,7 +1903,7 @@ def _render_html():
                     f"<div class='c'><span>ROI</span><b class='{cls}'>{s['roi']:+.1f}%</b></div>"
                     f"<div class='c'><span>Balance</span><b>${s['final_balance']:.2f}</b></div>"
                     f"<div class='c'><span>Max DD</span><b>{s['mdd']:.1f}%</b></div></div>")
-        body.append("<p><a href='/trades.txt'>📄 trades.txt</a> &nbsp; <a href='/ringkasan.txt'>📄 ringkasan.txt</a> &nbsp; <a href='/logs'>📜 logs</a></p>")
+        body.append(f"<p><a href='/trades.txt' download='trades_{NS_MODE}.txt'>⬇️ Download trades.txt</a> &nbsp; <a href='/ringkasan.txt' download='ringkasan_{NS_MODE}.txt'>⬇️ Download ringkasan.txt</a></p><p class='small'><a href='/trades.txt?view=1'>👁 lihat trades</a> &nbsp; <a href='/ringkasan.txt?view=1'>👁 lihat ringkasan</a> &nbsp; <a href='/logs'>📜 logs</a></p>")
         if NS_MODE == 'bias_sweep' and BS_ENTRY == 'mss_m5':
             chain = f"MSS H1 {f.get('bs_mss',0)} → bias {f.get('bs_bias',0)} (balik {f.get('bs_flipback',0)}) → low tersentuh {f.get('m5_touch',0)} → MSS M5 {f.get('m5_mss',0)} → entry {f.get('bs_fill',0)} (batal: top {f.get('m5_cancel_top',0)}, ujung bias {f.get('m5_cancel_end',0)}, bias berubah {f.get('m5_cancel_bias',0)})"
         elif NS_MODE == 'bias_sweep':
@@ -1943,19 +1951,22 @@ def _render_html():
 # HTTP HANDLER + ENTRY POINT
 # ============================================================
 class _Handler(BaseHTTPRequestHandler):
-    def _send(self, body, ctype):
+    def _send(self, body, ctype, filename=None):
         self.send_response(200)
         self.send_header('Content-Type', ctype)
+        if filename:                                                              # paksa DOWNLOAD (bukan dibuka di browser)
+            self.send_header('Content-Disposition', f'attachment; filename="{filename}"')
+        self.send_header('Cache-Control', 'no-store')
         self.send_header('Content-Length', str(len(body)))
         self.end_headers()
         self.wfile.write(body)
 
     def do_GET(self):
-        path = urlparse(self.path).path
-        if path == '/trades.txt':
-            return self._send(_trades_txt(), 'text/plain; charset=utf-8')
+        u = urlparse(self.path); path = u.path; view = 'view=1' in (u.query or '')
+        if path == '/trades.txt':                                                  # default = download; /trades.txt?view=1 = lihat di browser
+            return self._send(_trades_txt(), 'text/plain; charset=utf-8', None if view else f'trades_{NS_MODE}.txt')
         if path == '/ringkasan.txt':
-            return self._send(_ringkasan_txt(), 'text/plain; charset=utf-8')
+            return self._send(_ringkasan_txt(), 'text/plain; charset=utf-8', None if view else f'ringkasan_{NS_MODE}.txt')
         if path == '/logs':
             with _lock:
                 body = '\n'.join(_log).encode('utf-8')
