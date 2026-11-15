@@ -8,6 +8,7 @@ backtest_web.py -- bias_sweep + MSS M5 (BS_ENTRY=mss_m5, DEFAULT; BS_ENTRY=eng =
   SL: BS_M5_SLMODE=end (default) = ujung MSS; low_mss = low M5 kiri-1 kanan-1 terdekat ke belakang dari candle break (harus di bawah entry), kalau tidak ada = ujung MSS. Lalu + BS_M5_SLBUF%.
   6) BS_M5_MSS2=1 (default): setelah MSS-1 JANGAN entry. Tunggu ujung MSS-1 tersentuh; swing MSS-2 = high tertinggi dari candle break MSS-1 s/d candle ujung tersentuh (kiri-kanan 1); kalau bikin struktur bearish lagi (P baru menembus P bawah) swing dihitung ulang. Close menembus swing = MSS-2 -> limit di swing itu, SL ujung MSS-2 + BS_M5_SLBUF% (default 0.3), TP titik tertinggi range.
   SL default: ujung BODY candle ujung MSS (BS_M5_SLREF=body; wick = ujung wick), buffer BS_M5_SLBUF default 0.
+  RR: hanya trade kalau RR rencana (limit->TP : limit->SL) >= BS_M5_MINRR (default 2). Di bawah itu limit tidak dipasang, low dianggap terpakai, cari low yang lebih bawah.
   Env: BS_ENTRY (mss_m5|eng), BS_M5_N (1), BS_M5_SLBUF (0).
 
 backtest_web.py -- MODE bias_sweep (NS_MODE=bias_sweep): TF struktur BS_TF (default 60 = H1), struktur hanya jadi BIAS, entry = limit setelah sweep + engulfing
@@ -147,7 +148,8 @@ BS_M5_SWFRAC = os.environ.get('BS_M5_SWFRAC', '1') == '1'                # mss_m
 BS_M5_SLMODE = os.environ.get('BS_M5_SLMODE', 'end').strip().lower()   # mss_m5: end (default) = SL di ujung MSS | low_mss = SL di low M5 (kiri 1 kanan 1) terdekat ke belakang dari candle break, kalau tidak ada = ujung MSS
 BS_M5_N      = int(os.environ.get('BS_M5_N', 1))                   # mss_m5: P dan swing M5 = N candle kiri & N kanan
 BS_M5_MSS2   = os.environ.get('BS_M5_MSS2', '1') == '1'                 # mss_m5: 1 (default) = setelah MSS-1 JANGAN entry; tunggu ujung MSS tersentuh lalu cari MSS-2 (swing = high tertinggi dari awal break MSS-1 s/d ujung tersentuh; kalau bikin struktur bearish lagi, swing dihitung ulang) | 0 = entry setelah MSS-1
-BS_M5_SLREF  = os.environ.get('BS_M5_SLREF', 'wick').strip().lower()      # mss_m5 (SLMODE=end): body (default) = SL di ujung BODY candle ujung MSS (Long: min(open,close) candle low terendah; Short: max) | wick = di ujung wick
+BS_M5_SLREF  = os.environ.get('BS_M5_SLREF', 'wick').strip().lower()      # mss_m5 (SLMODE=end): wick (default) = SL di ujung wick MSS | body = di ujung BODY candle ujung MSS (Long: min(open,close) candle low terendah; Short: max)
+BS_M5_MINRR  = float(os.environ.get('BS_M5_MINRR', 2))                     # mss_m5: RR rencana minimum (entry limit, SL, TP). Di bawah ini TIDAK trade (limit tidak dipasang). 0 = tanpa filter
 BS_M5_SLBUF  = float(os.environ.get('BS_M5_SLBUF', 0))             # mss_m5: buffer SL di luar ujung MSS (dalam % harga, 0 = tepat di ujung)
 BS_SWEEP     = os.environ.get('BS_SWEEP', 'close').strip().lower()  # bias_sweep: low dianggap TERBREAK (bukan sweep) kalau close candle menembus levelnya (close) | atau body menembus (body)
 _bt_ = os.environ.get('BS_TRACE', '').strip()
@@ -902,7 +904,7 @@ def biassweep_signals(symbol, TS, O, H, L, C, st, M5=None):
     m5mode = (BS_ENTRY == 'mss_m5' and M5 is not None and BS_TF > 5)
     if m5mode:
         TSm, Om, Hm, Lm, Cm = M5; NM = BS_M5_N
-    for k in ('bs_p', 'bs_struct', 'bs_mss', 'bs_bias', 'bs_flipback', 'bs_clear', 'bs_sweep', 'bs_engulf', 'bs_setup', 'bs_cancel_tp', 'bs_cancel_bias', 'bs_fill', 'bs_pend_end', 'bs_cand_fail', 'bs_top_reset', 'bs_refresh', 'bs_eng_fail', 'bs_eng_wick', 'bs_pm', 'bs_pm_ok', 'bs_pm_fail', 'bs_pm_cancel', 'm5_touch', 'm5_touch_busy', 'm5_mss1', 'm5_wait_touch', 'm5_newp', 'm5_noswing', 'm5_mss', 'm5_mss_skip', 'm5_cancel_top', 'm5_cancel_end', 'm5_cancel_bias'):
+    for k in ('bs_p', 'bs_struct', 'bs_mss', 'bs_bias', 'bs_flipback', 'bs_clear', 'bs_sweep', 'bs_engulf', 'bs_setup', 'bs_cancel_tp', 'bs_cancel_bias', 'bs_fill', 'bs_pend_end', 'bs_cand_fail', 'bs_top_reset', 'bs_refresh', 'bs_eng_fail', 'bs_eng_wick', 'bs_pm', 'bs_pm_ok', 'bs_pm_fail', 'bs_pm_cancel', 'm5_touch', 'm5_touch_busy', 'm5_mss1', 'm5_wait_touch', 'm5_rr_skip', 'm5_newp', 'm5_noswing', 'm5_mss', 'm5_mss_skip', 'm5_cancel_top', 'm5_cancel_end', 'm5_cancel_bias'):
         st.setdefault(k, 0)
     new_chain = lambda reset: dict(reset=reset, p=None, first=None, prev=None, ns=0, sw=None, sw_px=None)
     ch = {True: new_chain(0), False: new_chain(0)}
@@ -1061,6 +1063,8 @@ def biassweep_signals(symbol, TS, O, H, L, C, st, M5=None):
                         ref_i = jj; ref_px = float((Lm if sup else Hm)[jj]); sl_basis = 'low M5'; break
             slp = ref_px * (1 - BS_M5_SLBUF / 100.0) if sup else ref_px * (1 + BS_M5_SLBUF / 100.0)
             ok = (tp > ent > slp) if sup else (tp < ent < slp)
+            if ok and abs(tp - ent) / abs(ent - slp) < BS_M5_MINRR - 1e-12:               # RR rencana di bawah minimum: jangan trade
+                ok = False; st['m5_rr_skip'] += 1
             if ok and pos is None and pend is None:
                 swp = k['sw']
                 info = dict(bias_kind=bias['kind'], bias_end=bias['end'], cand_ts=int(TS[k['c0']]), cand_px=k['lvl'], p0_ts=int(TSm[k['p0']]), touch_ts=int(TSm[k['T']]),
@@ -1078,7 +1082,7 @@ def biassweep_signals(symbol, TS, O, H, L, C, st, M5=None):
                     info['set_ts'] = int(TSm[m])
                     pend = dict(sup=sup, t=m, m5=True, limit=ent, sl=float(slp), tp=tp, rr=rr_, info=info)
                     st['bs_setup'] += 1
-            else:
+            elif not (tp > ent > slp if sup else tp < ent < slp) or pos is not None or pend is not None:
                 st['m5_mss_skip'] += 1
             bias['cand'] = None; bias['floor'] = float(k['lvl']); trk = None             # low berikutnya harus LEBIH BAWAH (Short: lebih atas) dari low yang tadi disentuh
 
@@ -1769,7 +1773,7 @@ def _funnel_lines(f):
                 f"Bias balik karena ujung MSS ter-break : {f.get('bs_flipback',0)}", f"Bias dikosongkan : {f.get('bs_clear',0)}", f"Pencarian direset (harga menyentuh titik tertinggi/terendah range) : {f.get('bs_top_reset',0)}",
                 f"Low/high H1 tersentuh di M5 : {f.get('m5_touch',0)}", f"P baru M5 (P bawah ditembus, swing dihitung ulang) : {f.get('m5_newp',0)}", f"Sentuhan tanpa swing awal valid : {f.get('m5_noswing',0)}",
                 f"Batal: harga sampai titik tertinggi/terendah range : {f.get('m5_cancel_top',0)}", f"Batal: ujung bias tersentuh : {f.get('m5_cancel_end',0)}", f"Low tersentuh saat posisi/limit masih ada (dilewati, cari low lebih bawah) : {f.get('m5_touch_busy',0)}", f"Batal: bias berubah : {f.get('m5_cancel_bias',0)}",
-                f"MSS-1 M5 terbentuk (tunggu ujung MSS-1) : {f.get('m5_mss1',0)}", f"Ujung MSS-1 tersentuh (cari MSS-2) : {f.get('m5_wait_touch',0)}", f"MSS M5 final terbentuk : {f.get('m5_mss',0)}", f"Limit dipasang : {f.get('bs_setup',0)}", f"Limit batal (TP tersentuh dulu) : {f.get('bs_cancel_tp',0)}", f"Limit belum terisi di akhir data : {f.get('bs_pend_end',0)}", f"MSS dibuang (RR/TP tidak valid atau posisi masih terbuka) : {f.get('m5_mss_skip',0)}", f"Entry market (jadi posisi) : {f.get('bs_fill',0)}"]
+                f"MSS-1 M5 terbentuk (tunggu ujung MSS-1) : {f.get('m5_mss1',0)}", f"Ujung MSS-1 tersentuh (cari MSS-2) : {f.get('m5_wait_touch',0)}", f"MSS M5 final terbentuk : {f.get('m5_mss',0)}", f"Limit dipasang : {f.get('bs_setup',0)}", f"Limit batal (TP tersentuh dulu) : {f.get('bs_cancel_tp',0)}", f"Limit belum terisi di akhir data : {f.get('bs_pend_end',0)}", f"MSS dibuang: RR rencana di bawah 1:{BS_M5_MINRR:g} (tidak trade) : {f.get('m5_rr_skip',0)}", f"MSS dibuang (TP/SL tidak valid atau posisi masih terbuka) : {f.get('m5_mss_skip',0)}", f"Entry market (jadi posisi) : {f.get('bs_fill',0)}"]
     if NS_MODE == 'bias_sweep':
         return [f"P valid : {f.get('bs_p',0)}", f"Struktur : {f.get('bs_struct',0)}", f"MSS (semua) : {f.get('bs_mss',0)}", f"MSS menunggu struktur searah (bias belum berubah) : {f.get('bs_pm',0)}", f"  jadi bias setelah ada struktur searah : {f.get('bs_pm_ok',0)}", f"  gagal, ujung MSS ter-break sebelum ada struktur : {f.get('bs_pm_fail',0)}", f"  dibatalkan MSS searah bias : {f.get('bs_pm_cancel',0)}", f"Bias berubah/ditetapkan : {f.get('bs_bias',0)}", f"MSS searah bias (bias tetap, hanya ujung bias dipindah) : {f.get('bs_refresh',0)}",
                 f"Bias balik karena ujung MSS ter-break : {f.get('bs_flipback',0)}", f"Bias dikosongkan (ujung bias balik ter-break) : {f.get('bs_clear',0)}",
