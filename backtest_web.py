@@ -12,6 +12,7 @@ backtest_web.py -- bias_sweep + MSS M5 (BS_ENTRY=mss_m5, DEFAULT; BS_ENTRY=eng =
   FIBONACCI (BS_FIB=1 default): range pada struktur H1. 100% = ujung bawah struktur H1 terbaru (P baru yang menembus P lama sesudah bias; kalau belum ada = ujung bias), 0% = titik tertinggi range (Short: terendah). Struktur baru terbentuk -> 100% pindah ke low baru (range melebar). Low (kandidat) hanya dicari/dipakai kalau kedalamannya >= BS_FIB_DEPTH (0.5 = 50% range).
   Default sekarang: MSS satu kali (BS_M5_MSS2=0), tanpa filter RR (BS_M5_MINRR=0), SL ujung wick MSS buffer 0.
   WARM-UP: BS_WARMUP=100 candle H1 pertama tiap koin tidak ada trade. Fibonacci default 61.8% (BS_FIB_DEPTH).
+  RANTAI H1 SATU ARAH (BS_STRICT=1 default): bias Long hanya cari P high ditembus P high lebih tinggi (struktur bullish); swing low di antaranya di-break close = MSS short. Tidak ada MSS long saat bias Long (tidak ada refresh/reset). Rantai low baru dimulai SETELAH MSS short, hanya untuk konfirmasi (struktur low) sebelum bias jadi Short. Bias Short kebalikannya. Fibonacci 100% tetap di ujung bias.
   Env: BS_ENTRY (mss_m5|eng), BS_M5_N (1), BS_M5_SLBUF (0).
 
 backtest_web.py -- MODE bias_sweep (NS_MODE=bias_sweep): TF struktur BS_TF (default 60 = H1), struktur hanya jadi BIAS, entry = limit setelah sweep + engulfing
@@ -80,7 +81,7 @@ Aturan lain: sinyal kembar (arah + candle MSS sama) dihitung sekali; sinyal dile
 Risk RISK_PCT dari balance (compounding, 1 akun bersama semua koin), fee masuk FEE_ENTRY_PCT + keluar FEE_EXIT_PCT.
 
 Deploy Railway: Start command -> python backtest_web.py ; buka domain Railway.
-Endpoint: /  (dashboard) | /trades.txt (DOWNLOAD; satu blok per trade, satu field per baris; ?view=1 = lihat di browser) | /ringkasan.txt (download; ?view=1) | /logs
+Endpoint: /  (dashboard) | /struktur.txt (download; struktur H1 tanpa trade: struktur, mss_long/mss_short, pembalikan arah; ?coin=XXX) | /trades.txt (DOWNLOAD; satu blok per trade, satu field per baris; ?view=1 = lihat di browser) | /ringkasan.txt (download; ?view=1) | /logs
 Env: SYMBOLS (mis. FARTCOINUSDT,ETHFIUSDT), BACKTEST_START_DATE, BACKTEST_END_DATE, RR (3), RISK_PCT, INITIAL_BALANCE,
 FEE_ENTRY_PCT, FEE_EXIT_PCT, LEVERAGE, MARGIN_USAGE_CAP, MAX_CONCURRENT (kosong/0 = tanpa batas),
 NS_MODE (fibo_bos|touch|breakout_acuan|mss_only), FB_ENTRY_DEPTH (0.786), FB_TP_MODE (body|ext), FB_P_MODE (pairs|chain), FB_BREAK_BODY (1), FB_SW_EQUAL (valid|merge|invalid), FB_TRACK_MAX, FB_TRACK_CAP, FB_TP_EXT (0.15), FB_PAIR_MAX (500), NS_MIN_STRUCT (2), NS_BOS (1; hanya mss_only), NS_TP (far|rr|struct1), NS_STRUCT_LOOKBACK (1000), ONE_POS_PER_DIR (1; 0 = boleh banyak posisi searah), MSS_WINDOW (3000), NS_ENTRY (bo_bi|mss), NS_TP (far|rr), NS_EXPIRE_MIN (60), NS_LV_N (5), NS_LV_EQUAL (valid), NS_P_SWING (1), NS_MSS_SWING (1), NS_LOOKBACK (100), NS_P_EQUAL / NS_SW_EQUAL (merge), NS_MSS_REF (range).
@@ -161,7 +162,9 @@ BS_SWEEP     = os.environ.get('BS_SWEEP', 'close').strip().lower()  # bias_sweep
 _bt_ = os.environ.get('BS_TRACE', '').strip()
 _BS_TRACE = tuple(int(x) for x in _bt_.split(',')) if _bt_ else None   # debug saja
 _BS_LOG = []
+_STRUCT_EV = {}
 BS_CONFIRM   = int(os.environ.get('BS_CONFIRM', 1))               # bias_sweep: bias baru baru berlaku setelah MSS DIIKUTI minimal N struktur searah MSS (P2 menembus P awal sesudah MSS). 0 = bias langsung berubah saat MSS
+BS_STRICT    = os.environ.get('BS_STRICT', '1') == '1'                  # mss_m5: 1 (default) = rantai H1 satu arah: bias Long hanya cari P high (struktur bullish) -> MSS hanya short; bias Short hanya P low -> MSS hanya long. Rantai lawan baru jalan setelah MSS, hanya untuk konfirmasi struktur. 0 = dua rantai selalu jalan (lama)
 BS_N         = int(os.environ.get('BS_N', 1))                    # bias_sweep: swing N kiri & N kanan (rantai P dan pencarian low/high entry)
 MF_FLIP      = os.environ.get('MF_FLIP', '1').strip() not in ('0', 'false', 'no')   # MSS lawan menutup posisi & entry arah lawan
 NS_LV_N      = int(os.environ.get('NS_LV_N', 5))                  # filter level: ujung wick terpanjang c1/c2 -> N candle kiri & kanan tidak melebihi (0 = matikan)
@@ -905,9 +908,13 @@ def _tf_arrays(m5df, tf):
     return (d['ts'].values.astype(np.int64),) + tuple(d[c].values.astype(float) for c in ('open', 'high', 'low', 'close'))
 
 
-def biassweep_signals(symbol, TS, O, H, L, C, st, M5=None):
+def biassweep_signals(symbol, TS, O, H, L, C, st, M5=None, ev=None):
     n = len(C); N = BS_N
+    def E(**kw):                                                              # log kejadian struktur H1 (hanya kalau ev diberikan)
+        if ev is not None:
+            ev.append(kw)
     m5mode = (BS_ENTRY == 'mss_m5' and M5 is not None and BS_TF > 5)
+    strict = m5mode and BS_STRICT
     if m5mode:
         TSm, Om, Hm, Lm, Cm = M5; NM = BS_M5_N
     for k in ('bs_p', 'bs_struct', 'bs_mss', 'bs_bias', 'bs_flipback', 'bs_clear', 'bs_sweep', 'bs_engulf', 'bs_setup', 'bs_cancel_tp', 'bs_cancel_bias', 'bs_fill', 'bs_pend_end', 'bs_cand_fail', 'bs_top_reset', 'bs_refresh', 'bs_eng_fail', 'bs_eng_wick', 'bs_pm', 'bs_pm_ok', 'bs_pm_fail', 'bs_pm_cancel', 'm5_touch', 'm5_touch_busy', 'm5_mss1', 'm5_wait_touch', 'm5_rr_skip', 'fib_skip_touch', 'warm_skip', 'm5_newp', 'm5_noswing', 'm5_mss', 'm5_mss_skip', 'm5_cancel_top', 'm5_cancel_end', 'm5_cancel_bias'):
@@ -921,6 +928,7 @@ def biassweep_signals(symbol, TS, O, H, L, C, st, M5=None):
 
     def set_bias(sup, kind, end, ext, ext_idx, p_idx, t):
         nonlocal bias, pend, ch, pm, trk
+        E(type='bias', sup=sup, kind=kind, prev=(None if bias is None else bias['sup']), end=float(end), ext=float(ext), ext_ts=int(TS[ext_idx]), t=int(TS[t]))
         if trk is not None:
             trk = None; st['m5_cancel_bias'] += 1
         pm = None
@@ -1191,10 +1199,16 @@ def biassweep_signals(symbol, TS, O, H, L, C, st, M5=None):
                 ch = {True: new_chain(t), False: new_chain(t)}
         # (b2) MSS yang menunggu struktur: ujung MSS ter-break sebelum ada struktur searah -> gagal, bias tidak berubah
         if pm is not None and t > pm['t'] and ((L[t] <= pm['end']) if pm['sup'] else (H[t] >= pm['end'])):
-            pm = None; st['bs_pm_fail'] += 1
+            E(type='pm_fail', sup=pm['sup'], end=pm['end'], t=int(TS[t])); pm = None; st['bs_pm_fail'] += 1
+            if strict:
+                ch = {True: new_chain(t), False: new_chain(t)}
         # (c) rantai P / MSS -> bias
         sigs = []
+        # strict: rantai yang jalan = bias Long -> rantai HIGH (sup=False) saja; bias Short -> rantai LOW saja; ada MSS menunggu konfirmasi -> hanya rantai searah MSS itu (hitung struktur, tanpa deteksi MSS); belum ada bias -> dua-duanya
+        act_ch = ({not pm['sup']} if pm is not None else ({not bias['sup']} if bias is not None else {True, False})) if strict else {True, False}
         for sup in (True, False):
+            if sup not in act_ch:
+                continue
             c = ch[sup]; arr = L if sup else H; j = t - N
             if j >= 0 and _mf_swing_at(arr, j, N, sup, c['reset']):
                 st['bs_p'] += 1
@@ -1208,7 +1222,9 @@ def biassweep_signals(symbol, TS, O, H, L, C, st, M5=None):
                         lo_, hi_ = (a_ + 1, j) if j - a_ > 1 else (a_, j + 1)
                         seg = sa[lo_:hi_]; k_ = int(np.argmax(seg) if sup else np.argmin(seg))
                         c['sw'] = lo_ + k_; c['sw_px'] = float(seg[k_]); c['prev'] = a_; c['p'] = j; c['ns'] += 1; st['bs_struct'] += 1
-            if c['sw'] is not None and c['ns'] >= MF_MIN_STRUCT and ((C[t] > c['sw_px']) if sup else (C[t] < c['sw_px'])):
+                        E(type='struktur', sup=sup, n=c['ns'], t=int(TS[t]), p_old=(int(TS[a_]), float(arr[a_])), p_new=(int(TS[j]), float(arr[j])), thr=float(thr), basis=('body' if body_ else 'wick'),
+                          sw=(int(TS[c['sw']]), c['sw_px']), pm=(None if pm is None else pm['sup']), bias=(None if bias is None else bias['sup']))
+            if c['sw'] is not None and c['ns'] >= MF_MIN_STRUCT and not (strict and pm is not None) and ((C[t] > c['sw_px']) if sup else (C[t] < c['sw_px'])):
                 sigs.append(sup)
         if bias is not None:
             fib_update()
@@ -1218,6 +1234,9 @@ def biassweep_signals(symbol, TS, O, H, L, C, st, M5=None):
             seg = H[c['p']:t + 1] if sup else L[c['p']:t + 1]
             k_ = int(np.argmax(seg) if sup else np.argmin(seg))
             st['bs_mss'] += 1
+            _act = ('searah' if (bias is not None and bias['sup'] == sup) else (('pm_diabaikan' if (pm is not None and pm['sup'] == sup) else ('pm_tunggu_ganti' if pm is not None else 'pm_tunggu')) if BS_CONFIRM > 0 else 'bias_langsung'))
+            E(type='mss', sup=sup, t=int(TS[t]), close=float(C[t]), sw=(int(TS[c['sw']]), c['sw_px']), n=c['ns'], p_last=(int(TS[c['p']]), float((L if sup else H)[c['p']])), end=end,
+              top=(int(TS[c['p'] + k_]), float(seg[k_])), action=_act, bias=(None if bias is None else bias['sup']), need=max(BS_CONFIRM, 1))
             if bias is not None and bias['sup'] == sup:
                 # MSS searah dengan bias yang sudah ada: bias tetap, pencarian low/high, range dan limit TIDAK direset. Hanya ujung bias dipindah ke ujung MSS terbaru.
                 bias['end'] = end; bias['kind'] = 'mss'; bias['p_idx'] = int(c['p'])
@@ -1226,7 +1245,7 @@ def biassweep_signals(symbol, TS, O, H, L, C, st, M5=None):
                 ch = {True: new_chain(t), False: new_chain(t)}
                 st['bs_refresh'] += 1
                 if pm is not None:                                             # MSS lawan yang menunggu struktur dibatalkan: bias masih sama
-                    pm = None; st['bs_pm_cancel'] += 1
+                    E(type='pm_cancel', sup=pm['sup'], t=int(TS[t])); pm = None; st['bs_pm_cancel'] += 1
             elif BS_CONFIRM > 0:
                 if pm is not None and pm['sup'] == sup:                         # MSS searah dengan MSS yang sedang menunggu: diabaikan
                     ch[sup] = new_chain(t)
@@ -1242,6 +1261,7 @@ def biassweep_signals(symbol, TS, O, H, L, C, st, M5=None):
             pseg = H[pm['p_idx']:t + 1] if pm['sup'] else L[pm['p_idx']:t + 1]
             pk = int(np.argmax(pseg) if pm['sup'] else np.argmin(pseg))
             st['bs_pm_ok'] += 1
+            E(type='pm_ok', sup=pm['sup'], t=int(TS[t]), n=ch[not pm['sup']]['ns'])
             set_bias(pm['sup'], 'mss', pm['end'], float(pseg[pk]), pm['p_idx'] + pk, pm['p_idx'], t)
         # (d) cari entry di dalam range bias (low terus dicari; low yang ter-break body gagal -> cari yang lebih bawah)
         if bias is not None:
@@ -1281,7 +1301,10 @@ def process_coin(symbol, m5df):
     r1_cache = {}; r2_cache = {}
     if NS_MODE == 'bias_sweep':
         ts_, o_, h_, l_, c_ = _tf_arrays(m5df, BS_TF)
-        return biassweep_signals(symbol, ts_, o_, h_, l_, c_, st, (TS5, m5df['open'].values.astype(float), H5, L5, C5)), st
+        _ev = []
+        _res = biassweep_signals(symbol, ts_, o_, h_, l_, c_, st, (TS5, m5df['open'].values.astype(float), H5, L5, C5), _ev)
+        _STRUCT_EV[symbol] = dict(ev=_ev, first=int(ts_[0]), last=int(ts_[-1]) + BS_TF * 60000, n=len(ts_))
+        return _res, st
     if NS_MODE == 'mss_flip':
         if MF_TF == 5:
             return mssflip_signals(symbol, TS5, H5, L5, C5, st, m5df['open'].values.astype(float)), st
@@ -1772,6 +1795,54 @@ def _fibo_block(k, tr):
     return o
 
 
+def _struct_txt(only=None):
+    """TXT struktur H1 (tanpa trade): urutan struktur (P ditembus P baru), MSS long/short, dan pembalikan arah bias. Satu blok per kejadian, satu field per baris."""
+    syms = [only] if only else list(_STRUCT_EV)
+    o = [f"STRUKTUR H1 (TF {BS_TF}m) - cara bot menemukan struktur, MSS, dan pembalikan arah. Tanpa trade.", f"Waktu = WIB, candle H1 ditulis jam BUKA-nya. Swing N={BS_N} kiri-kanan. P baru harus menyentuh ujung {'body' if MF_BODY else 'wick'} P sebelumnya (P2 dst).",
+         f"Bias berubah hanya kalau ada MSS lalu diikuti minimal {max(BS_CONFIRM, 1)} struktur searah MSS (BS_CONFIRM={BS_CONFIRM}).", ""]
+    for sy in syms:
+        d = _STRUCT_EV.get(sy)
+        if not d:
+            continue
+        ev = d['ev']; tl = lambda e: 'LOW' if e['sup'] else 'HIGH'
+        n_ml = sum(1 for e in ev if e['type'] == 'mss' and e['sup']); n_ms = sum(1 for e in ev if e['type'] == 'mss' and not e['sup'])
+        biases = [e for e in ev if e['type'] == 'bias']; n_rev = sum(1 for e in biases if e['prev'] is not None and e['prev'] != e['sup'])
+        o += ["=" * 60, f"COIN : {sy}", f"Data H1 : {_wib(d['first'])} s/d {_wib(d['last'])} ({d['n']} candle H1)", f"Total struktur low (menuju mss_long) : {sum(1 for e in ev if e['type'] == 'struktur' and e['sup'])}",
+              f"Total struktur high (menuju mss_short) : {sum(1 for e in ev if e['type'] == 'struktur' and not e['sup'])}", f"Total mss_long : {n_ml}", f"Total mss_short : {n_ms}",
+              f"Bias dimulai/berubah : {len(biases)} (pembalikan arah: {n_rev})", "", "ALUR BIAS (urut waktu)"]
+        for e in biases:
+            pv = 'awal' if e['prev'] is None else ('Long' if e['prev'] else 'Short')
+            o.append(f"   {_wib(e['t'])} | {pv} -> {'Long' if e['sup'] else 'Short'}" + (" (PEMBALIKAN)" if e['prev'] is not None and e['prev'] != e['sup'] else ""))
+        o += ["", "KEJADIAN (urut waktu)", ""]
+        for i_, e in enumerate(ev, 1):
+            ty = e['type']
+            if ty == 'struktur':
+                o += [f"#{i_} STRUKTUR{e['n']} ({tl(e)}, menuju {'mss_long' if e['sup'] else 'mss_short'})", f"Terkonfirmasi (candle H1) : {_wib(e['t'])}",
+                      f"P yang ditembus (P{e['n']}) : {_wib(e['p_old'][0])} @ {e['p_old'][1]:.8g}", f"P penembus (P{e['n'] + 1}) : {_wib(e['p_new'][0])} @ {e['p_new'][1]:.8g}",
+                      f"Syarat tembus (ujung {e['basis']} P{e['n']}) : {e['thr']:.8g}", f"Swing yang harus di-break untuk MSS : {_wib(e['sw'][0])} @ {e['sw'][1]:.8g}"]
+                if e['pm'] is not None and e['pm'] == (not e['sup']):
+                    o.append(f"Catatan : struktur searah mss_{'long' if e['pm'] else 'short'} yang sedang menunggu konfirmasi bias")
+                o.append("")
+            elif ty == 'mss':
+                ln = 'long' if e['sup'] else 'short'; bb = 'belum ada' if e['bias'] is None else ('Long' if e['bias'] else 'Short')
+                act = {'searah': f"MSS searah bias ({bb}): bias tetap, ujung bias dipindah ke ujung MSS terbaru", 'pm_tunggu': f"MSS lawan bias ({bb}): bias BELUM berubah, menunggu {e['need']} struktur searah mss_{ln}",
+                       'pm_tunggu_ganti': f"MSS lawan bias ({bb}): menggantikan MSS lain yang menunggu, menunggu {e['need']} struktur searah mss_{ln}", 'pm_diabaikan': f"MSS searah MSS yang sedang menunggu: diabaikan", 'bias_langsung': f"bias langsung berubah menjadi {ln.capitalize()}"}[e['action']]
+                o += [f"#{i_} MSS_{ln.upper()}", f"Terjadi (candle H1 yang close-nya menembus) : {_wib(e['t'])} close {e['close']:.8g}", f"Swing yang di-break : {_wib(e['sw'][0])} @ {e['sw'][1]:.8g}", f"Jumlah struktur sebelum MSS : {e['n']}",
+                      f"P terakhir ({'ujung bawah' if e['sup'] else 'ujung atas'}) : {_wib(e['p_last'][0])} @ {e['p_last'][1]:.8g}", f"Ujung MSS : {e['end']:.8g}", f"Titik {'tertinggi' if e['sup'] else 'terendah'} dari P terakhir sampai MSS : {_wib(e['top'][0])} @ {e['top'][1]:.8g}",
+                      f"Bias sebelum : {bb}", f"Aksi bot : {act}", ""]
+            elif ty == 'pm_ok':
+                o += [f"#{i_} KONFIRMASI STRUKTUR SEARAH mss_{'long' if e['sup'] else 'short'}", f"Waktu : {_wib(e['t'])}", f"Jumlah struktur searah : {e['n']}", ""]
+            elif ty == 'bias':
+                pv = 'awal (belum ada)' if e['prev'] is None else ('Long' if e['prev'] else 'Short')
+                o += [f"#{i_} BIAS {'LONG' if e['sup'] else 'SHORT'}" + (" - PEMBALIKAN ARAH" if e['prev'] is not None and e['prev'] != e['sup'] else ""), f"Waktu : {_wib(e['t'])}", f"Bias sebelum : {pv}", f"Ujung bias : {e['end']:.8g}",
+                      f"Titik {'tertinggi' if e['sup'] else 'terendah'} range : {_wib(e['ext_ts'])} @ {e['ext']:.8g}", ""]
+            elif ty == 'pm_fail':
+                o += [f"#{i_} MSS_{'LONG' if e['sup'] else 'SHORT'} GAGAL", f"Waktu : {_wib(e['t'])}", f"Alasan : ujung MSS ({e['end']:.8g}) ter-break sebelum ada struktur searah; bias tidak berubah", ""]
+            elif ty == 'pm_cancel':
+                o += [f"#{i_} MSS menunggu DIBATALKAN (muncul MSS searah bias)", f"Waktu : {_wib(e['t'])}", ""]
+    return '\n'.join(o).encode('utf-8')
+
+
 def _trades_txt():
     with _lock:
         trades = list(_trades); phase = _phase
@@ -1903,7 +1974,7 @@ def _render_html():
                     f"<div class='c'><span>ROI</span><b class='{cls}'>{s['roi']:+.1f}%</b></div>"
                     f"<div class='c'><span>Balance</span><b>${s['final_balance']:.2f}</b></div>"
                     f"<div class='c'><span>Max DD</span><b>{s['mdd']:.1f}%</b></div></div>")
-        body.append(f"<p><a href='/trades.txt' download='trades_{NS_MODE}.txt'>⬇️ Download trades.txt</a> &nbsp; <a href='/ringkasan.txt' download='ringkasan_{NS_MODE}.txt'>⬇️ Download ringkasan.txt</a></p><p class='small'><a href='/trades.txt?view=1'>👁 lihat trades</a> &nbsp; <a href='/ringkasan.txt?view=1'>👁 lihat ringkasan</a> &nbsp; <a href='/logs'>📜 logs</a></p>")
+        body.append(f"<p><a href='/trades.txt' download='trades_{NS_MODE}.txt'>⬇️ Download trades.txt</a> &nbsp; <a href='/ringkasan.txt' download='ringkasan_{NS_MODE}.txt'>⬇️ Download ringkasan.txt</a> &nbsp; <a href='/struktur.txt' download='struktur_h1_{NS_MODE}.txt'>⬇️ Download struktur H1</a></p><p class='small'><a href='/trades.txt?view=1'>👁 lihat trades</a> &nbsp; <a href='/ringkasan.txt?view=1'>👁 lihat ringkasan</a> &nbsp; <a href='/struktur.txt?view=1'>👁 lihat struktur H1</a> &nbsp; <a href='/logs'>📜 logs</a></p>")
         if NS_MODE == 'bias_sweep' and BS_ENTRY == 'mss_m5':
             chain = f"MSS H1 {f.get('bs_mss',0)} → bias {f.get('bs_bias',0)} (balik {f.get('bs_flipback',0)}) → low tersentuh {f.get('m5_touch',0)} → MSS M5 {f.get('m5_mss',0)} → entry {f.get('bs_fill',0)} (batal: top {f.get('m5_cancel_top',0)}, ujung bias {f.get('m5_cancel_end',0)}, bias berubah {f.get('m5_cancel_bias',0)})"
         elif NS_MODE == 'bias_sweep':
@@ -1965,6 +2036,9 @@ class _Handler(BaseHTTPRequestHandler):
         u = urlparse(self.path); path = u.path; view = 'view=1' in (u.query or '')
         if path == '/trades.txt':                                                  # default = download; /trades.txt?view=1 = lihat di browser
             return self._send(_trades_txt(), 'text/plain; charset=utf-8', None if view else f'trades_{NS_MODE}.txt')
+        if path == '/struktur.txt':                                                 # struktur H1 (tanpa trade); ?coin=FARTCOINUSDT untuk satu koin
+            cn = [q.split('=', 1)[1] for q in (u.query or '').split('&') if q.startswith('coin=')]
+            return self._send(_struct_txt(cn[0] if cn else None), 'text/plain; charset=utf-8', None if view else f'struktur_h1_{NS_MODE}.txt')
         if path == '/ringkasan.txt':
             return self._send(_ringkasan_txt(), 'text/plain; charset=utf-8', None if view else f'ringkasan_{NS_MODE}.txt')
         if path == '/logs':
