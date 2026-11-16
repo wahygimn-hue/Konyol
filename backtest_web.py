@@ -12,7 +12,7 @@ backtest_web.py -- bias_sweep + MSS M5 (BS_ENTRY=mss_m5, DEFAULT; BS_ENTRY=eng =
   FIBONACCI (BS_FIB=1 default): range pada struktur H1. 100% = ujung bawah struktur H1 terbaru (P baru yang menembus P lama sesudah bias; kalau belum ada = ujung bias), 0% = titik tertinggi range (Short: terendah). Struktur baru terbentuk -> 100% pindah ke low baru (range melebar). Low (kandidat) hanya dicari/dipakai kalau kedalamannya >= BS_FIB_DEPTH (0.5 = 50% range).
   Default sekarang: MSS satu kali (BS_M5_MSS2=0), tanpa filter RR (BS_M5_MINRR=0), SL ujung wick MSS buffer 0.
   WARM-UP: BS_WARMUP=100 candle H1 pertama tiap koin tidak ada trade. Fibonacci default 61.8% (BS_FIB_DEPTH).
-  RANTAI H1 SATU ARAH (BS_STRICT=1 default): bias Long hanya cari P high ditembus P high lebih tinggi (struktur bullish); swing low di antaranya di-break close = MSS short. Tidak ada MSS long saat bias Long (tidak ada refresh/reset). Rantai low baru dimulai SETELAH MSS short, hanya untuk konfirmasi (struktur low) sebelum bias jadi Short. Bias Short kebalikannya. Fibonacci 100% tetap di ujung bias.
+  RANTAI H1 SATU ARAH (BS_STRICT=1 default): bias Long hanya cari P high ditembus P high lebih tinggi (struktur bullish); swing low di antaranya di-break close = MSS short. Tidak ada MSS long saat bias Long (tidak ada refresh/reset). Struktur yang mengkonfirmasi bias tidak direset: swing-nya langsung jadi swing yang harus di-break untuk MSS lawan. Rantai low baru dimulai SETELAH MSS short, hanya untuk konfirmasi (struktur low) sebelum bias jadi Short. Bias Short kebalikannya. Fibonacci 100% tetap di ujung bias.
   Env: BS_ENTRY (mss_m5|eng), BS_M5_N (1), BS_M5_SLBUF (0).
 
 backtest_web.py -- MODE bias_sweep (NS_MODE=bias_sweep): TF struktur BS_TF (default 60 = H1), struktur hanya jadi BIAS, entry = limit setelah sweep + engulfing
@@ -926,7 +926,7 @@ def biassweep_signals(symbol, TS, O, H, L, C, st, M5=None, ev=None):
     def swing(sup, j, lo):
         return _mf_swing_at(L if sup else H, j, N, sup, lo)
 
-    def set_bias(sup, kind, end, ext, ext_idx, p_idx, t):
+    def set_bias(sup, kind, end, ext, ext_idx, p_idx, t, keep=None):
         nonlocal bias, pend, ch, pm, trk
         E(type='bias', sup=sup, kind=kind, prev=(None if bias is None else bias['sup']), end=float(end), ext=float(ext), ext_ts=int(TS[ext_idx]), t=int(TS[t]))
         if trk is not None:
@@ -936,6 +936,8 @@ def biassweep_signals(symbol, TS, O, H, L, C, st, M5=None, ev=None):
             pend = None; st['bs_cancel_bias'] += 1
         bias = dict(sup=sup, kind=kind, end=float(end), ext=float(ext), ext_idx=int(ext_idx), p_idx=int(p_idx), cand=None, floor=None, touch=None, t=t, fib100=float(end), fib_src=None)
         ch = {True: new_chain(t), False: new_chain(t)}
+        if keep is not None:                                        # strict: struktur yang MENGKONFIRMASI bias tetap dipakai (swing-nya yang harus di-break untuk MSS lawan), tidak ikut direset
+            ch[not sup] = keep
         st['bs_bias'] += 1
         for tt in range(ext_idx + 1, t):                           # kandidat dari ujung atas (tanpa membuat setup dari masa lalu)
             cand_step(tt, False)
@@ -1262,7 +1264,7 @@ def biassweep_signals(symbol, TS, O, H, L, C, st, M5=None, ev=None):
             pk = int(np.argmax(pseg) if pm['sup'] else np.argmin(pseg))
             st['bs_pm_ok'] += 1
             E(type='pm_ok', sup=pm['sup'], t=int(TS[t]), n=ch[not pm['sup']]['ns'])
-            set_bias(pm['sup'], 'mss', pm['end'], float(pseg[pk]), pm['p_idx'] + pk, pm['p_idx'], t)
+            set_bias(pm['sup'], 'mss', pm['end'], float(pseg[pk]), pm['p_idx'] + pk, pm['p_idx'], t, keep=(ch[not pm['sup']] if strict else None))
         # (d) cari entry di dalam range bias (low terus dicari; low yang ter-break body gagal -> cari yang lebih bawah)
         if bias is not None:
             if (H[t] >= bias['ext']) if bias['sup'] else (L[t] <= bias['ext']):     # harga MENYENTUH titik tertinggi (Short: terendah) range -> pencarian low direset, cari low baru sesudah candle ini
