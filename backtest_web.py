@@ -151,7 +151,7 @@ BS_M5_ENDBREAK = os.environ.get('BS_M5_ENDBREAK', '0') == '1'            # mss_m
 BS_M5_SWFRAC = os.environ.get('BS_M5_SWFRAC', '1') == '1'                # mss_m5: 1 (default) = swing MSS wajib kiri-kanan N (fractal); 0 = swing bebas = high tertinggi (Short: low terendah) antara P lama dan P baru. Aturan P (kiri-kanan N) tetap.
 BS_M5_SLMODE = os.environ.get('BS_M5_SLMODE', 'end').strip().lower()   # mss_m5: end (default) = SL di ujung MSS | low_mss = SL di low M5 (kiri 1 kanan 1) terdekat ke belakang dari candle break, kalau tidak ada = ujung MSS
 BS_FIB       = os.environ.get('BS_FIB', '1') == '1'                       # mss_m5: Fibonacci pada struktur H1. 100% = ujung bawah struktur H1 terbaru (P baru menembus P lama; Short: ujung atas), 0% = titik tertinggi (Short: terendah). Low hanya dicari di kedalaman >= BS_FIB_DEPTH
-BS_FIB_DEPTH = float(os.environ.get('BS_FIB_DEPTH', 0.618))                 # kedalaman minimum low (0.5 = 50% range)
+BS_FIB_DEPTH = float(os.environ.get('BS_FIB_DEPTH', 0.0))                 # kedalaman minimum low (0.5 = 50% range)
 BS_WARMUP    = int(os.environ.get('BS_WARMUP', 100))                      # mss_m5: N candle H1 pertama tiap koin TIDAK boleh ada trade (data awal, pergerakan kecil). Struktur/bias tetap dihitung; low yang tersentuh saat warm-up dianggap terpakai
 BS_M5_N      = int(os.environ.get('BS_M5_N', 1))                   # mss_m5: P dan swing M5 = N candle kiri & N kanan
 BS_M5_MSS2   = os.environ.get('BS_M5_MSS2', '0') == '1'                 # mss_m5: 1 (default) = setelah MSS-1 JANGAN entry; tunggu ujung MSS tersentuh lalu cari MSS-2 (swing = high tertinggi dari awal break MSS-1 s/d ujung tersentuh; kalau bikin struktur bearish lagi, swing dihitung ulang) | 0 = entry setelah MSS-1
