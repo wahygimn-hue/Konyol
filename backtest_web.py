@@ -16,6 +16,7 @@ backtest_web.py -- bias_sweep + MSS M5 (BS_ENTRY=mss_m5, DEFAULT; BS_ENTRY=eng =
   MSS GAGAL (BS_PMFAIL_KEEP=1 default): kalau MSS yang menunggu struktur gagal (ujung MSS ter-break), rantai P bias tidak dihapus: P terakhir dipertahankan sehingga low/high baru yang melewatinya dihitung struktur (cara lama: kedua rantai dihapus dan P mulai dari nol, bisa membuat rantai terkunci berbulan-bulan).
   STRUKTUR H1 (BS_STRUCT_HIGHER=1 default): P high baru HARUS LEBIH TINGGI dari wick P high sebelumnya (Short: P low lebih rendah dari wick P low sebelumnya). 0 = cara lama (cukup menyentuh BODY P sebelumnya, MF_BODY).
   RENTANG FVG (BS_FVG_TO_SWING=1 default): FVG dicari dari ujung MSS sampai SWING struktur terakhir (batas zona), bukan sampai titik tertinggi; 'FVG terakhir' = FVG paling akhir di rentang itu yang MASIH VALID (belum tertutup) saat daftar dibangun (biasanya FVG yang disentuh swing struktur terakhir).
+  STRUKTUR M5 SEJAK MASUK ZONA (BS_M5_FROM_ZONE=1 default): pencarian struktur M5 selalu dimulai sejak masuk zona; kalau tracker baru dibuat saat FVG tersentuh, candle M5 dibaca ulang dari masuk zona sampai FVG tersentuh.
   FVG TERAKHIR (BS_FVG_SKIP_LAST=always default): FVG terakhir yang masih valid di rentang ujung MSS -> swing struktur terakhir SELALU diabaikan (sweep atau bukan); 'sweep' = hanya saat struktur terakhir sweep; 'off' = semua FVG dipakai.
   STRUKTUR TERAKHIR SWEEP (BS_FVG_SKIP_LAST=sweep): kalau struktur H1 terakhir hanya sweep (P baru menembus P sebelumnya cuma lewat wick, tidak ada close H1 yang menembus), FVG terakhir di leg diabaikan; FVG lain tetap dipakai.
   MSS KEDULUAN (BS_M5_KEEP_CHAIN=1 default): MSS M5 yang terjadi sebelum FVG tersentuh tidak sah dan tidak membuang tracker; swing itu terpakai, P terakhir dipertahankan dan rantai dilanjutkan. Kalau harga lalu menembus P terakhir sampai menyentuh FVG, struktur baru terbentuk (swing = titik terjauh di antara kedua P) dan MSS sah kalau close menembus swing itu.
@@ -166,6 +167,7 @@ BS_SL        = os.environ.get('BS_SL', 'wick').strip().lower()    # bias_sweep: 
 BS_ENTRY     = os.environ.get('BS_ENTRY', 'mss_m5').strip().lower()   # mss_m5 (default) = low H1 tersentuh -> cari MSS di M5 -> entry market | eng = cara lama (sweep + candle engulfing, limit 50% body)
 BS_M5_ABOVE_FVG = os.environ.get('BS_M5_ABOVE_FVG', '0') == '1'            # mss_m5: 1 = close M5 yang mem-break swing MSS HARUS di atas tepi atas gap FVG H1 (Short: di bawah tepi bawah gap). Break di dalam gap / di bawahnya = MSS tidak valid (gugur, tunggu FVG berikutnya disentuh). 0 (default) = cara lama
 BS_M5_ENTRY_FVG = os.environ.get('BS_M5_ENTRY_FVG', '0') == '1'            # mss_m5: 1 = entry limit di tepi gap FVG H1 (Long: gap atas, Short: gap bawah) bukan di swing yang di-break. 0 (default) = limit di swing
+BS_M5_FROM_ZONE = os.environ.get('BS_M5_FROM_ZONE', '1') == '1'            # pemicu fvg: 1 (default) = pencarian struktur M5 SELALU dimulai sejak masuk zona. Kalau tracker baru harus dibuat saat FVG tersentuh (mis. setelah trade/percobaan sebelumnya selesai), candle M5 dibaca ulang dari masuk zona sampai FVG tersentuh (P, struktur, swing dibangun ulang). 0 = tracker baru mulai dari candle FVG tersentuh
 BS_FVG_TO_SWING = os.environ.get('BS_FVG_TO_SWING', '1') == '1'            # pemicu fvg: 1 (default) = FVG dicari dari ujung MSS sampai SWING struktur terakhir (batas zona), bukan sampai titik tertinggi. 'FVG terakhir' = FVG paling akhir di rentang itu yang MASIH VALID (belum tertutup) saat daftar dibangun (biasanya FVG yang disentuh swing struktur terakhir). Perlu BS_ZONE=1. 0 = sampai titik tertinggi
 _skl_ = os.environ.get('BS_FVG_SKIP_LAST')                                # pemicu fvg: 'always' (default) = FVG TERAKHIR (yang masih valid di rentang ujung MSS -> swing struktur terakhir) SELALU diabaikan, sweep atau bukan; FVG kedua dari akhir atau lainnya tetap dipakai. 'sweep' = hanya diabaikan kalau struktur terakhir cuma sweep (wick menembus P sebelumnya, tidak ada close H1 yang menembus). 'off' = semua FVG dipakai
 if _skl_ is None:                                                           # kompatibel dengan BS_FVG_SKIP_SWEEP lama (1 = sweep, 0 = off)
@@ -944,8 +946,10 @@ def _tf_arrays(m5df, tf):
 
 def biassweep_signals(symbol, TS, O, H, L, C, st, M5=None, ev=None):
     n = len(C); N = BS_N
+    replaying = False
+
     def TR(kind, ts, **kw):                                                   # debug: BS_TRACE=awal,akhir (ms epoch UTC) -> catat keputusan bot
-        if _BS_TRACE is not None and _BS_TRACE[0] <= ts <= _BS_TRACE[1]:
+        if _BS_TRACE is not None and _BS_TRACE[0] <= ts <= _BS_TRACE[1] and not replaying:
             _BS_LOG.append(dict(kind=kind, t=int(ts), **kw))
     def E(**kw):                                                              # log kejadian struktur H1 (hanya kalau ev diberikan)
         if ev is not None:
@@ -957,7 +961,7 @@ def biassweep_signals(symbol, TS, O, H, L, C, st, M5=None, ev=None):
     endbrk = BS_M5_ENDBREAK and not dual            # dual: ujung bias tidak mengakhiri bias
     if m5mode:
         TSm, Om, Hm, Lm, Cm = M5; NM = BS_M5_N
-    for k in ('mss_in_fvg', 'fvgz_first', 'pmfail_keep', 'fvgz_touch', 'fvgz_fail', 'fvgz_sl', 'fvgz_busy', 'zone_skip_cand', 'zone_drop', 'bs_p', 'bs_struct', 'bs_mss', 'bs_bias', 'bs_flipback', 'bs_clear', 'bs_sweep', 'bs_engulf', 'bs_setup', 'bs_cancel_tp', 'bs_cancel_bias', 'bs_fill', 'bs_pend_end', 'bs_cand_fail', 'bs_top_reset', 'bs_refresh', 'bs_eng_fail', 'bs_eng_wick', 'bs_pm', 'bs_pm_ok', 'bs_pm_fail', 'bs_pm_cancel', 'm5_touch', 'm5_touch_busy', 'm5_mss1', 'm5_wait_touch', 'm5_rr_skip', 'fib_skip_touch', 'warm_skip', 'm5_cancel_pm', 'pm_block', 'fvg_skip_cand', 'fvg_touch', 'fvg_mss_first', 'm5_newp', 'm5_noswing', 'm5_mss', 'm5_mss_skip', 'm5_cancel_top', 'm5_cancel_end', 'm5_cancel_bias'):
+    for k in ('fvgz_replay', 'mss_in_fvg', 'fvgz_first', 'pmfail_keep', 'fvgz_touch', 'fvgz_fail', 'fvgz_sl', 'fvgz_busy', 'zone_skip_cand', 'zone_drop', 'bs_p', 'bs_struct', 'bs_mss', 'bs_bias', 'bs_flipback', 'bs_clear', 'bs_sweep', 'bs_engulf', 'bs_setup', 'bs_cancel_tp', 'bs_cancel_bias', 'bs_fill', 'bs_pend_end', 'bs_cand_fail', 'bs_top_reset', 'bs_refresh', 'bs_eng_fail', 'bs_eng_wick', 'bs_pm', 'bs_pm_ok', 'bs_pm_fail', 'bs_pm_cancel', 'm5_touch', 'm5_touch_busy', 'm5_mss1', 'm5_wait_touch', 'm5_rr_skip', 'fib_skip_touch', 'warm_skip', 'm5_cancel_pm', 'pm_block', 'fvg_skip_cand', 'fvg_touch', 'fvg_mss_first', 'm5_newp', 'm5_noswing', 'm5_mss', 'm5_mss_skip', 'm5_cancel_top', 'm5_cancel_end', 'm5_cancel_bias'):
         st.setdefault(k, 0)
     new_chain = lambda reset: dict(reset=reset, p=None, first=None, prev=None, ns=0, sw=None, sw_px=None, hist=[])
     ch = {True: new_chain(0), False: new_chain(0)}
@@ -1284,6 +1288,22 @@ def biassweep_signals(symbol, TS, O, H, L, C, st, M5=None, ev=None):
                 elif H[t] > f['edge']:
                     f['edge'] = float(H[t])
 
+    def replay_from_zone(sup, a0, m, z):
+        """Bangun ulang tracker M5 seolah-olah berjalan sejak candle masuk zona (a0) sampai sebelum candle FVG tersentuh (m). Tidak membuat trade; counter/log dibuang."""
+        nonlocal trk, replaying
+        snap = dict(st)
+        replaying = True
+        trk = dict(sup=sup, c0=max(int(np.searchsorted(TS, TSm[a0], 'right')) - 1, 0), T=a0, p0=a0, p=a0, sw=None, nP=0, hist=[(a0, None)], lvl=float((Lm if sup else Hm)[a0]),
+                   fvg=None, fvg_hit=False, need_fvg=True, try_no=0, fib=(None, None, None, 0, None), trig='fvg', start='zona', zone_at=z, zin=a0,
+                   zone_src=bias.get('zone_src'), replayed=True)
+        for mm in range(a0, m):
+            m5_step(mm)
+            if trk is None:
+                break
+        replaying = False
+        st.clear(); st.update(snap)
+        return trk is not None
+
     def fvg_trigger(t, m):
         """Pemicu FVG. BS_ZONE_FIRST=1: pertama kali harga masuk zona -> tracker MSS M5 langsung mulai (tetap jalan walau harga keluar zona); FVG (sisa gap/fresh, di dalam zona) harus tersentuh SEBELUM MSS, kalau tidak MSS gugur (tidak valid) dan tunggu FVG disentuh -> cari MSS lagi. FVG yang sudah dipakai tidak dipakai lagi.
         BS_ZONE_FIRST=0: masuk zona -> tunggu FVG tersentuh -> baru tracker MSS mulai."""
@@ -1349,6 +1369,14 @@ def biassweep_signals(symbol, TS, O, H, L, C, st, M5=None, ev=None):
             st['fvgz_busy'] += 1; TR('touch', TSm[m], res='FVG tersentuh tapi dilewati (posisi/limit masih ada)', edge=f['edge']); return
         m_top = int(np.searchsorted(TSm, TS[bias['ext_idx']] + BS_TF * 60000, 'left'))
         a0 = min(max(bias['zin'], m_top), m)
+        if BS_M5_FROM_ZONE and BS_ZONE_FIRST and a0 < m and replay_from_zone(sup, a0, m, z):     # struktur M5 dibaca sejak masuk zona
+            bias['tries'] = bias.get('tries', 0) + 1
+            trk['try_no'] = bias['tries']
+            trk['fvg'] = dict(edge=f['edge'], far=f['far'], edge0=f['edge0'], ts=f['ts']); trk['fvg_hit'] = True; trk['fvg_m'] = m
+            trk['sweep_touch'] = bool(bias.get('sweep')); trk['fvg_last_touch'] = bias.get('fv_last')
+            st['m5_touch'] += 1; st['fvgz_touch'] += 1; st['fvgz_replay'] += 1
+            TR('touch', TSm[m], res='FVG TERSENTUH -> struktur M5 dibaca ulang sejak masuk zona', edge=f['edge'], far=f['far'], zone=z)
+            return
         p0 = a0 + int(np.argmin(Lm[a0:m + 1]) if sup else np.argmax(Hm[a0:m + 1]))
         sw = m5_best_swing(sup, p0, m)
         if sw is None:
@@ -1444,7 +1472,7 @@ def biassweep_signals(symbol, TS, O, H, L, C, st, M5=None, ev=None):
             TR('trk', TSm[m], res=('MSS M5 -> limit dipasang' if (ok and pos is None and pend is None) else 'MSS M5 tapi DIBUANG (RR/TP/SL tidak valid atau posisi masih ada)'), entry=ent, sl=float(slp), tp=tp)
             if ok and pos is None and pend is None:
                 swp = k['sw']
-                info = dict(skip_mode=BS_FVG_SKIP_LAST, sweep=bool(k.get('sweep_touch')), fvg_last_ts=(None if k.get('fvg_last_touch') is None else int(TS[k['fvg_last_touch']])), early=k.get('early'), entry_at=entry_at, mss_close=float(Cm[m]), strict_sw=BS_M5_STRICT_SW, start=k.get('start'), zone_src=(None if k.get('zone_src') is None else dict(prev_ts=int(TS[k['zone_src'][0]]), prev_px=float((H if k['sup'] else L)[k['zone_src'][0]]), p_ts=int(TS[k['zone_src'][1]]), p_px=float((H if k['sup'] else L)[k['zone_src'][1]]), sw_ts=int(TS[k['zone_src'][2]]), sw_px=float((L if k['sup'] else H)[k['zone_src'][2]]), ns=k['zone_src'][3], thr_px=k['zone_src'][4], thr_kind=k['zone_src'][5], plist=[(int(TS[i_]), float((H if k['sup'] else L)[i_])) for i_ in k['zone_src'][6]])), trig=k.get('trig', 'low'), zin_ts=(int(TSm[k['zin']]) if k.get('zin') is not None else None), zone_lo=bias['end'], zone_hi=(k['zone_at'] if 'zone_at' in k else bias.get('cand_zone')), dual=dual, from_live=((cur == live) if dual else True), live_dir=(None if (not dual or live is None) else ('Long' if live else 'Short')), bias_kind=bias['kind'], bias_end=bias['end'], cand_ts=int(TS[k['c0']]), cand_px=k['lvl'], p0_ts=int(TSm[k['p0']]), touch_ts=int(TSm[k['T']]),
+                info = dict(replayed=bool(k.get('replayed')), skip_mode=BS_FVG_SKIP_LAST, sweep=bool(k.get('sweep_touch')), fvg_last_ts=(None if k.get('fvg_last_touch') is None else int(TS[k['fvg_last_touch']])), early=k.get('early'), entry_at=entry_at, mss_close=float(Cm[m]), strict_sw=BS_M5_STRICT_SW, start=k.get('start'), zone_src=(None if k.get('zone_src') is None else dict(prev_ts=int(TS[k['zone_src'][0]]), prev_px=float((H if k['sup'] else L)[k['zone_src'][0]]), p_ts=int(TS[k['zone_src'][1]]), p_px=float((H if k['sup'] else L)[k['zone_src'][1]]), sw_ts=int(TS[k['zone_src'][2]]), sw_px=float((L if k['sup'] else H)[k['zone_src'][2]]), ns=k['zone_src'][3], thr_px=k['zone_src'][4], thr_kind=k['zone_src'][5], plist=[(int(TS[i_]), float((H if k['sup'] else L)[i_])) for i_ in k['zone_src'][6]])), trig=k.get('trig', 'low'), zin_ts=(int(TSm[k['zin']]) if k.get('zin') is not None else None), zone_lo=bias['end'], zone_hi=(k['zone_at'] if 'zone_at' in k else bias.get('cand_zone')), dual=dual, from_live=((cur == live) if dual else True), live_dir=(None if (not dual or live is None) else ('Long' if live else 'Short')), bias_kind=bias['kind'], bias_end=bias['end'], cand_ts=int(TS[k['c0']]), cand_px=k['lvl'], p0_ts=int(TSm[k['p0']]), touch_ts=int(TSm[k['T']]),
                             p_ts=int(TSm[k['p']]), p_px=float((Lm if sup else Hm)[k['p']]), n_newp=k['nP'], sw_ts=int(TSm[swp]), sw_px=float((Hm if sup else Lm)[swp]),
                             sw0_ts=(int(TSm[k['hist'][0][1]]) if k['hist'][0][1] is not None else None), sw0_px=(float((Hm if sup else Lm)[k['hist'][0][1]]) if k['hist'][0][1] is not None else None),
                             mss_ts=int(TSm[m]), fill_ts=int(TSm[m]), try_no=k.get('try_no', 1), **(dict(fvg_edge=k['fvg']['edge'], fvg_far=k['fvg']['far'], fvg_edge0=k['fvg'].get('edge0'), fvg_ts=k['fvg']['ts'], fvg_hit_ts=int(TSm[k['fvg_m']])) if k.get('fvg') is not None else {}), fib_lo=k['fib'][0], fib_hi=k['fib'][1], fib_src_ts=(int(TS[k['fib'][2]]) if k['fib'][2] is not None else None), fib_n=k['fib'][3], fib_depth=k['fib'][4],
@@ -2101,7 +2129,7 @@ def _bsm_block(k, tr):
          *([f"Fibonacci H1 : 100% = {g(tr['fib_lo'])} ({'ujung swing struktur' + str(tr.get('fib_n', 0)) + ', ' + _wib(tr['fib_src_ts']) if tr.get('fib_src_ts') else 'ujung bias'}) | 0% = {g(tr['fib_hi'])} (titik {'tertinggi' if long_ else 'terendah'}) | {BS_FIB_DEPTH * 100:g}% = {g(tr['fib_hi'] + BS_FIB_DEPTH * (tr['fib_lo'] - tr['fib_hi']))}", f"Kedalaman low yang disentuh : {tr['fib_depth'] * 100:.0f}% range"] if tr.get('fib_lo') is not None and tr.get('fib_depth') is not None else []),
          *([f"1. Masuk zona (candle M5 pertama) : {_wib(tr['zin_ts'])}" if tr.get('zin_ts') else "1. Zona : tanpa batas (BS_ZONE=0 atau belum ada struktur)",
             f"2. Ujung {'bawah' if long_ else 'atas'} M5 awal (P, {lo_hi[0]} terdalam sejak masuk zona) : {_wib(tr['p0_ts'])} @ {g(tr['cand_px'])}",
-            f"3. FVG H1 tersentuh (M5) : {_wib(tr.get('fvg_hit_ts') or tr['touch_ts'])}", *([f"   Close break MSS (M5) : {g(tr['mss_close'])} ({'di atas tepi atas' if long_ else 'di bawah tepi bawah'} gap FVG {g(tr['fvg_edge0'] if tr.get('fvg_edge0') is not None else tr['fvg_edge'])})"] if (tr.get('fvg_edge') is not None and tr.get('mss_close') is not None) else []), f"   MSS dicari sejak : {_wib(tr['touch_ts'])} ({'pertama kali masuk zona' if tr.get('start') == 'zona' else 'FVG tersentuh'})", *[f"   MSS keduluan (FVG belum tersentuh) dilewati : swing {g(e_[1])} ({_wib(e_[3])}) ditembus close {g(e_[2])} pada {_wib(e_[0])} -> rantai P dilanjutkan" for e_ in (tr.get('early') or [])], *([(f"   FVG terakhir ({_wib(tr['fvg_last_ts'])}) diabaikan (aturan: FVG terakhir selalu diabaikan), FVG lain dipakai" if tr.get('skip_mode') == 'always' else f"   Struktur terakhir hanya sweep (wick menembus P sebelumnya, tidak ada close): FVG terakhir ({_wib(tr['fvg_last_ts'])}) diabaikan, FVG lain dipakai")] if (tr.get('sweep') and tr.get('fvg_last_ts')) else [])] if tr.get('trig') == 'fvg' else
+            f"3. FVG H1 tersentuh (M5) : {_wib(tr.get('fvg_hit_ts') or tr['touch_ts'])}", *([f"   Close break MSS (M5) : {g(tr['mss_close'])} ({'di atas tepi atas' if long_ else 'di bawah tepi bawah'} gap FVG {g(tr['fvg_edge0'] if tr.get('fvg_edge0') is not None else tr['fvg_edge'])})"] if (tr.get('fvg_edge') is not None and tr.get('mss_close') is not None) else []), f"   MSS dicari sejak : {_wib(tr['touch_ts'])} ({('pertama kali masuk zona' + (', dibaca ulang saat FVG tersentuh' if tr.get('replayed') else '')) if tr.get('start') == 'zona' else 'FVG tersentuh'})", *[f"   MSS keduluan (FVG belum tersentuh) dilewati : swing {g(e_[1])} ({_wib(e_[3])}) ditembus close {g(e_[2])} pada {_wib(e_[0])} -> rantai P dilanjutkan" for e_ in (tr.get('early') or [])], *([(f"   FVG terakhir ({_wib(tr['fvg_last_ts'])}) diabaikan (aturan: FVG terakhir selalu diabaikan), FVG lain dipakai" if tr.get('skip_mode') == 'always' else f"   Struktur terakhir hanya sweep (wick menembus P sebelumnya, tidak ada close): FVG terakhir ({_wib(tr['fvg_last_ts'])}) diabaikan, FVG lain dipakai")] if (tr.get('sweep') and tr.get('fvg_last_ts')) else [])] if tr.get('trig') == 'fvg' else
            [f"1. {lo_hi[0].capitalize()} H1 (candle) : {_wib(tr['cand_ts'])} @ {g(tr['cand_px'])}",
             f"2. Ujung {'bawah' if long_ else 'atas'} M5 awal (P) : {_wib(tr['p0_ts'])}",
             f"3. {lo_hi[0].capitalize()} H1 tersentuh (M5) : {_wib(tr['touch_ts'])}"]),
