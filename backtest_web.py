@@ -178,7 +178,8 @@ BS_FVG_SKIP_LAST = _skl_.lower()
 BS_FVG_SKIP_SWEEP = BS_FVG_SKIP_LAST != 'off'                               # dipakai kode: ada aturan abaikan FVG terakhir
 BS_M5_KEEP_CHAIN = os.environ.get('BS_M5_KEEP_CHAIN', '1') == '1'          # pemicu fvg (tracker sejak masuk zona): 1 (default) = MSS yang keduluan sebelum FVG tersentuh TIDAK membuang tracker: swing itu dianggap terpakai, P terakhir dipertahankan, rantai P M5 dilanjutkan. Kalau harga lalu menembus P terakhir (mis. P 0.115 -> P 0.110 menyentuh FVG), struktur baru terbentuk dengan swing = titik terjauh di antara kedua P, dan MSS sah kalau close menembus swing itu. 0 = tracker dibuang (gugur), tunggu FVG disentuh lalu mulai dari nol
 BS_M5_ENTRY  = os.environ.get('BS_M5_ENTRY', 'limit_sw').strip().lower()   # mss_m5: limit_sw (default) = limit di swing yang di-break | market = market di close MSS
-BS_DUAL      = os.environ.get('BS_DUAL', '1') == '1'                       # bias DUA ARAH: bias Long dan Short sama-sama hidup. Bias live (terbaru, dari MSS+struktur H1) menentukan MSS H1; bias lama (arah lawan) TETAP cari low/high -> MSS M5 -> entry, TP di titik tertinggi (Long) / terendah (Short) range-nya sendiri. 0 = cara lama (hanya 1 bias, bias lama dibuang saat bias berganti)
+BS_MINI      = os.environ.get('BS_MINI', '1') == '1'                       # H1: struktur = P ditembus P (kiri-kanan 1) yang WAJIB punya minimal 1 MINI-STRUKTUR di dalamnya (dari ujung swing struktur sampai tertingginya; mini-struktur = P ditembus P kiri-kanan 1, swing bebas). Struktur tanpa mini-struktur / tanpa pullback yang menembus swing mini-struktur terakhir struktur sebelumnya = hanya mini-struktur untuk struktur sebelumnya (digabung). Zona entry = dari ujung swing struktur sampai swing mini-struktur terakhir; FVG dicari di zona itu. MSS H1 = close menembus swing STRUKTUR terakhir, bias langsung ganti (tanpa konfirmasi), satu bias (BS_DUAL=0). 0 = cara lama
+BS_DUAL      = os.environ.get('BS_DUAL', '0' if BS_MINI else '1') == '1'                       # bias DUA ARAH: bias Long dan Short sama-sama hidup. Bias live (terbaru, dari MSS+struktur H1) menentukan MSS H1; bias lama (arah lawan) TETAP cari low/high -> MSS M5 -> entry, TP di titik tertinggi (Long) / terendah (Short) range-nya sendiri. 0 = cara lama (hanya 1 bias, bias lama dibuang saat bias berganti)
 BS_DUAL_PM   = os.environ.get('BS_DUAL_PM', '1') == '1'                    # BS_DUAL=1: 1 (default) = TIDAK ada blokir: walau MSS lawan sudah terjadi (menunggu struktur konfirmasi) pencarian entry bias live TETAP jalan (mode dua bias); 0 = bias live diblok saat MSS lawan menunggu seperti cara lama
 BS_M5_ENDBREAK = os.environ.get('BS_M5_ENDBREAK', '0') == '1'            # mss_m5: 1 = ujung bias tersentuh mengakhiri/membalik bias (cara lama); 0 (default) = TIDAK. Bias hanya selesai kalau titik tertinggi range tercapai atau H1 MSS+struktur melawan bias
 BS_M5_SWFRAC = os.environ.get('BS_M5_SWFRAC', '0') == '1'                # mss_m5: 0 (default) = swing bebas: titik terjauh di antara P sebelumnya dan P terakhir (Long: high tertinggi; Short: low terendah), TANPA syarat kiri-kanan; 1 = swing MSS wajib kiri-kanan N (fractal); 0 = swing bebas = high tertinggi (Short: low terendah) antara P lama dan P baru. Aturan P (kiri-kanan N) tetap.
@@ -200,7 +201,7 @@ _bt_ = os.environ.get('BS_TRACE', '').strip()
 _BS_TRACE = tuple(int(x) for x in _bt_.split(',')) if _bt_ else None   # debug saja
 _BS_LOG = []
 _STRUCT_EV = {}
-BS_CONFIRM   = int(os.environ.get('BS_CONFIRM', 1))               # bias_sweep: bias baru baru berlaku setelah MSS DIIKUTI minimal N struktur searah MSS (P2 menembus P awal sesudah MSS). 0 = bias langsung berubah saat MSS
+BS_CONFIRM   = int(os.environ.get('BS_CONFIRM', 0 if BS_MINI else 1))               # bias_sweep: bias baru baru berlaku setelah MSS DIIKUTI minimal N struktur searah MSS (P2 menembus P awal sesudah MSS). 0 = bias langsung berubah saat MSS
 BS_STRICT    = os.environ.get('BS_STRICT', '1') == '1'                  # mss_m5: 1 (default) = rantai H1 satu arah: bias Long hanya cari P high (struktur bullish) -> MSS hanya short; bias Short hanya P low -> MSS hanya long. Rantai lawan baru jalan setelah MSS, hanya untuk konfirmasi struktur. 0 = dua rantai selalu jalan (lama)
 BS_N         = int(os.environ.get('BS_N', 1))                    # bias_sweep: swing N kiri & N kanan (rantai P dan pencarian low/high entry)
 MF_FLIP      = os.environ.get('MF_FLIP', '1').strip() not in ('0', 'false', 'no')   # MSS lawan menutup posisi & entry arah lawan
@@ -962,9 +963,9 @@ def biassweep_signals(symbol, TS, O, H, L, C, st, M5=None, ev=None):
     endbrk = BS_M5_ENDBREAK and not dual            # dual: ujung bias tidak mengakhiri bias
     if m5mode:
         TSm, Om, Hm, Lm, Cm = M5; NM = BS_M5_N
-    for k in ('fvgz_replay', 'mss_in_fvg', 'fvgz_first', 'pmfail_keep', 'fvgz_touch', 'fvgz_fail', 'fvgz_sl', 'fvgz_busy', 'zone_skip_cand', 'zone_drop', 'bs_p', 'bs_struct', 'bs_mss', 'bs_bias', 'bs_flipback', 'bs_clear', 'bs_sweep', 'bs_engulf', 'bs_setup', 'bs_cancel_tp', 'bs_cancel_bias', 'bs_fill', 'bs_pend_end', 'bs_cand_fail', 'bs_top_reset', 'bs_refresh', 'bs_eng_fail', 'bs_eng_wick', 'bs_pm', 'bs_pm_ok', 'bs_pm_fail', 'bs_pm_cancel', 'm5_touch', 'm5_touch_busy', 'm5_mss1', 'm5_wait_touch', 'm5_rr_skip', 'fib_skip_touch', 'warm_skip', 'm5_cancel_pm', 'pm_block', 'fvg_skip_cand', 'fvg_touch', 'fvg_mss_first', 'm5_newp', 'm5_noswing', 'm5_mss', 'm5_mss_skip', 'm5_cancel_top', 'm5_cancel_end', 'm5_cancel_bias'):
+    for k in ('mini_merge', 'mini_struct', 'fvgz_replay', 'mss_in_fvg', 'fvgz_first', 'pmfail_keep', 'fvgz_touch', 'fvgz_fail', 'fvgz_sl', 'fvgz_busy', 'zone_skip_cand', 'zone_drop', 'bs_p', 'bs_struct', 'bs_mss', 'bs_bias', 'bs_flipback', 'bs_clear', 'bs_sweep', 'bs_engulf', 'bs_setup', 'bs_cancel_tp', 'bs_cancel_bias', 'bs_fill', 'bs_pend_end', 'bs_cand_fail', 'bs_top_reset', 'bs_refresh', 'bs_eng_fail', 'bs_eng_wick', 'bs_pm', 'bs_pm_ok', 'bs_pm_fail', 'bs_pm_cancel', 'm5_touch', 'm5_touch_busy', 'm5_mss1', 'm5_wait_touch', 'm5_rr_skip', 'fib_skip_touch', 'warm_skip', 'm5_cancel_pm', 'pm_block', 'fvg_skip_cand', 'fvg_touch', 'fvg_mss_first', 'm5_newp', 'm5_noswing', 'm5_mss', 'm5_mss_skip', 'm5_cancel_top', 'm5_cancel_end', 'm5_cancel_bias'):
         st.setdefault(k, 0)
-    new_chain = lambda reset: dict(reset=reset, p=None, first=None, prev=None, ns=0, sw=None, sw_px=None, hist=[])
+    new_chain = lambda reset: dict(reset=reset, p=None, first=None, prev=None, ns=0, sw=None, sw_px=None, hist=[], minis=[], mini_last_px=None, mini_last_idx=None)
     ch = {True: new_chain(0), False: new_chain(0)}
     bias = None; pend = None; pos = None; out = []; pm = None; trk = None
     # DUA ARAH: slot per arah (Long=True, Short=False). Variabel bias/trk/pend/pos = konteks slot yang sedang dimuat (cur). live = arah bias terbaru.
@@ -1046,12 +1047,45 @@ def biassweep_signals(symbol, TS, O, H, L, C, st, M5=None, ev=None):
         d_ = fib_depth(px)
         return d_ is not None and d_ >= BS_FIB_DEPTH - 1e-12
 
+    def mini_scan(sup, s_idx, j):
+        """Mini-struktur di dalam leg struktur (dari ujung swing s_idx sampai tertinggi j): P mini = fractal 1-1 (Long: high; Short: low) di (s_idx, j]; mini-struktur = P mini yang menembus P mini sebelumnya (wick); swing mini = titik terjauh di antara kedua P mini (bebas, tanpa syarat kiri-kanan)."""
+        arr = L if sup else H; sa = H if sup else L
+        mp = [i for i in range(s_idx + 1, j + 1) if _mf_swing_at(arr, i, N, sup, 0)]
+        out = []; cur = None
+        for i in mp:
+            if cur is None:
+                cur = i; continue
+            if (arr[i] < arr[cur]) if sup else (arr[i] > arr[cur]):
+                seg_ = sa[cur + 1:i]
+                if len(seg_) == 0:
+                    continue
+                k2 = int(np.argmax(seg_) if sup else np.argmin(seg_))
+                out.append(dict(p0=int(cur), p1=int(i), sw=int(cur + 1 + k2), swpx=float(seg_[k2])))
+                cur = i
+        return out
+
+    def zs_dict(k):
+        zs = k.get('zone_src')
+        if zs is None:
+            return None
+        sup_ = k['sup']; mini_ = BS_MINI and len(zs) > 7
+        sidx = zs[7] if mini_ else zs[2]
+        d = dict(prev_ts=int(TS[zs[0]]), prev_px=float((H if sup_ else L)[zs[0]]), p_ts=int(TS[zs[1]]), p_px=float((H if sup_ else L)[zs[1]]),
+                 sw_ts=int(TS[sidx]), sw_px=float((L if sup_ else H)[sidx]), ns=zs[3], thr_px=zs[4], thr_kind=zs[5],
+                 plist=[(int(TS[i_]), float((H if sup_ else L)[i_])) for i_ in zs[6]])
+        if mini_:
+            d['mini_ts'] = int(TS[zs[2]]); d['mini_px'] = float((L if sup_ else H)[zs[2]])
+            d['minis'] = [dict(p0_ts=int(TS[m_['p0']]), p0_px=float((H if sup_ else L)[m_['p0']]), p1_ts=int(TS[m_['p1']]), p1_px=float((H if sup_ else L)[m_['p1']]),
+                               sw_ts=int(TS[m_['sw']]), sw_px=float(m_['swpx'])) for m_ in zs[10]]
+        return d
+
     def zone_ok(lvl):
         """Long: ujung MSS (end) <= low <= ujung bawah swing struktur terbaru (zone). Short: zone <= high <= end."""
         z = bias.get('zone')
         if (not BS_ZONE) or z is None:
             return True
-        return (bias['end'] <= lvl <= z) if bias['sup'] else (z <= lvl <= bias['end'])
+        zl_ = bias.get('zlo', bias['end'])
+        return (zl_ <= lvl <= z) if bias['sup'] else (z <= lvl <= zl_)
 
     def zone_set(z, src=None):
         if fvgz and BS_FVG_TO_SWING and BS_ZONE and src != bias.get('zone_src'):
@@ -1235,12 +1269,14 @@ def biassweep_signals(symbol, TS, O, H, L, C, st, M5=None, ev=None):
         """Daftar FVG H1 yang MASIH ADA GAP-nya (sisa gap) di leg ujung MSS -> titik tertinggi, per candle H1 ke-t (inklusif)."""
         sup = bias['sup']; p0_ = bias['p_idx']; e1 = bias['ext_idx']; fv = {}; last_i = None
         zs_ = bias.get('zone_src')
+        if BS_MINI and zs_ is not None and len(zs_) > 7:
+            p0_ = int(zs_[7])                                                       # rentang FVG mulai dari ujung swing struktur
         if BS_FVG_TO_SWING and BS_ZONE and zs_ is not None:
             e1 = min(e1, int(zs_[2]))                                           # rentang FVG: ujung MSS -> candle swing struktur terakhir
         if e1 - p0_ >= 2:
             ar = L if sup else H
             hit = np.where(ar[p0_:e1 + 1] == bias['end'])[0]
-            st_i = p0_ + (int(hit[0]) if len(hit) else 0)
+            st_i = p0_ if (BS_MINI and zs_ is not None and len(zs_) > 7) else p0_ + (int(hit[0]) if len(hit) else 0)
             tail = ar[st_i + 2:t + 1]
             rc = (np.minimum.accumulate(tail[::-1])[::-1] if sup else np.maximum.accumulate(tail[::-1])[::-1]) if len(tail) else tail
             for i in range(st_i + 1, e1):
@@ -1311,7 +1347,9 @@ def biassweep_signals(symbol, TS, O, H, L, C, st, M5=None, ev=None):
         nonlocal trk
         sup = bias['sup']; fv = bias.get('fv')
         z = bias.get('zone') if BS_ZONE else None
-        bend = bias['end']
+        if BS_MINI and BS_ZONE and z is None:
+            return                                                                  # belum ada struktur (dengan mini-struktur) di arah bias ini: belum ada zona
+        bend = bias.get('zlo', bias['end'])
         first = False
         if BS_ZONE_FIRST:
             if (Cm[m] < bend) if sup else (Cm[m] > bend):                          # close M5 di luar ujung MSS: bukan di dalam zona
@@ -1475,7 +1513,7 @@ def biassweep_signals(symbol, TS, O, H, L, C, st, M5=None, ev=None):
             TR('trk', TSm[m], res=('MSS M5 -> limit dipasang' if (ok and pos is None and pend is None) else 'MSS M5 tapi DIBUANG (RR/TP/SL tidak valid atau posisi masih ada)'), entry=ent, sl=float(slp), tp=tp)
             if ok and pos is None and pend is None:
                 swp = k['sw']
-                info = dict(replayed=bool(k.get('replayed')), skip_mode=BS_FVG_SKIP_LAST, sweep=bool(k.get('sweep_touch')), fvg_last_ts=(None if k.get('fvg_last_touch') is None else int(TS[k['fvg_last_touch']])), early=k.get('early'), entry_at=entry_at, mss_close=float(Cm[m]), strict_sw=BS_M5_STRICT_SW, start=k.get('start'), zone_src=(None if k.get('zone_src') is None else dict(prev_ts=int(TS[k['zone_src'][0]]), prev_px=float((H if k['sup'] else L)[k['zone_src'][0]]), p_ts=int(TS[k['zone_src'][1]]), p_px=float((H if k['sup'] else L)[k['zone_src'][1]]), sw_ts=int(TS[k['zone_src'][2]]), sw_px=float((L if k['sup'] else H)[k['zone_src'][2]]), ns=k['zone_src'][3], thr_px=k['zone_src'][4], thr_kind=k['zone_src'][5], plist=[(int(TS[i_]), float((H if k['sup'] else L)[i_])) for i_ in k['zone_src'][6]])), trig=k.get('trig', 'low'), zin_ts=(int(TSm[k['zin']]) if k.get('zin') is not None else None), zone_lo=bias['end'], zone_hi=(k['zone_at'] if 'zone_at' in k else bias.get('cand_zone')), dual=dual, from_live=((cur == live) if dual else True), live_dir=(None if (not dual or live is None) else ('Long' if live else 'Short')), bias_kind=bias['kind'], bias_end=bias['end'], cand_ts=int(TS[k['c0']]), cand_px=k['lvl'], p0_ts=int(TSm[k['p0']]), touch_ts=int(TSm[k['T']]),
+                info = dict(replayed=bool(k.get('replayed')), skip_mode=BS_FVG_SKIP_LAST, sweep=bool(k.get('sweep_touch')), fvg_last_ts=(None if k.get('fvg_last_touch') is None else int(TS[k['fvg_last_touch']])), early=k.get('early'), entry_at=entry_at, mss_close=float(Cm[m]), strict_sw=BS_M5_STRICT_SW, start=k.get('start'), zone_src=zs_dict(k), trig=k.get('trig', 'low'), zin_ts=(int(TSm[k['zin']]) if k.get('zin') is not None else None), zone_lo=bias.get('zlo', bias['end']), zone_hi=(k['zone_at'] if 'zone_at' in k else bias.get('cand_zone')), dual=dual, from_live=((cur == live) if dual else True), live_dir=(None if (not dual or live is None) else ('Long' if live else 'Short')), bias_kind=bias['kind'], bias_end=bias['end'], cand_ts=int(TS[k['c0']]), cand_px=k['lvl'], p0_ts=int(TSm[k['p0']]), touch_ts=int(TSm[k['T']]),
                             p_ts=int(TSm[k['p']]), p_px=float((Lm if sup else Hm)[k['p']]), n_newp=k['nP'], sw_ts=int(TSm[swp]), sw_px=float((Hm if sup else Lm)[swp]),
                             sw0_ts=(int(TSm[k['hist'][0][1]]) if k['hist'][0][1] is not None else None), sw0_px=(float((Hm if sup else Lm)[k['hist'][0][1]]) if k['hist'][0][1] is not None else None),
                             mss_ts=int(TSm[m]), fill_ts=int(TSm[m]), try_no=k.get('try_no', 1), **(dict(fvg_edge=k['fvg']['edge'], fvg_far=k['fvg']['far'], fvg_edge0=k['fvg'].get('edge0'), fvg_ts=k['fvg']['ts'], fvg_hit_ts=int(TSm[k['fvg_m']])) if k.get('fvg') is not None else {}), fib_lo=k['fib'][0], fib_hi=k['fib'][1], fib_src_ts=(int(TS[k['fib'][2]]) if k['fib'][2] is not None else None), fib_n=k['fib'][3], fib_depth=k['fib'][4],
@@ -1646,14 +1684,40 @@ def biassweep_signals(symbol, TS, O, H, L, C, st, M5=None, ev=None):
                         sa = H if sup else L
                         lo_, hi_ = (a_ + 1, j) if j - a_ > 1 else (a_, j + 1)
                         seg = sa[lo_:hi_]; k_ = int(np.argmax(seg) if sup else np.argmin(seg))
-                        c['sw'] = lo_ + k_; c['sw_px'] = float(seg[k_]); c['prev'] = a_; c['p'] = j; c['ns'] += 1; c['hist'].append(int(j)); st['bs_struct'] += 1; c['touch_px'] = float(thr); c['touch_kind'] = 'body' if body_ else 'wick'
-                        E(type='struktur', sup=sup, n=c['ns'], t=int(TS[t]), p_old=(int(TS[a_]), float(arr[a_])), p_new=(int(TS[j]), float(arr[j])), thr=float(thr), basis=('body' if body_ else 'wick'),
-                          sw=(int(TS[c['sw']]), c['sw_px']), pm=(None if pm is None else pm['sup']), bias=(None if bias is None else bias['sup']))
+                        s_idx = lo_ + k_
+                        merged_ = False; minis_ = []
+                        if BS_MINI:
+                            minis_ = mini_scan(sup, s_idx, j)
+                            ok_ = len(minis_) >= 1                                     # struktur wajib punya minimal 1 mini-struktur
+                            if ok_ and c['ns'] >= 1 and c.get('mini_last_px') is not None:   # dan pullback harus menembus swing mini-struktur terakhir struktur sebelumnya
+                                ok_ = (float(H[a_:j + 1].max()) > c['mini_last_px']) if sup else (float(L[a_:j + 1].min()) < c['mini_last_px'])
+                            if not ok_:                                                # bukan struktur: mini-struktur untuk struktur sebelumnya, P puncak bergeser
+                                merged_ = True; st['mini_merge'] += 1
+                                if c['ns'] >= 1:
+                                    c['minis'].append(dict(p0=int(a_), p1=int(j), sw=int(s_idx), swpx=float(seg[k_])))
+                                    c['mini_last_px'] = float(seg[k_]); c['mini_last_idx'] = int(s_idx)
+                                c['p'] = j; c['hist'][-1] = int(j)
+                                E(type='mini_merge', sup=sup, t=int(TS[t]), p_old=(int(TS[a_]), float(arr[a_])), p_new=(int(TS[j]), float(arr[j])), n=c['ns'], sw=(int(TS[s_idx]), float(seg[k_])))
+                        if not merged_:
+                            c['sw'] = lo_ + k_; c['sw_px'] = float(seg[k_]); c['prev'] = a_; c['p'] = j; c['ns'] += 1; c['hist'].append(int(j)); st['bs_struct'] += 1; c['touch_px'] = float(thr); c['touch_kind'] = 'body' if body_ else 'wick'
+                            if BS_MINI:
+                                c['minis'] = minis_; c['mini_last_px'] = float(minis_[-1]['swpx']); c['mini_last_idx'] = int(minis_[-1]['sw']); st['mini_struct'] += len(minis_)
+                            E(type='struktur', sup=sup, n=c['ns'], t=int(TS[t]), p_old=(int(TS[a_]), float(arr[a_])), p_new=(int(TS[j]), float(arr[j])), thr=float(thr), basis=('body' if body_ else 'wick'),
+                              sw=(int(TS[c['sw']]), c['sw_px']), pm=(None if pm is None else pm['sup']), bias=(None if bias is None else bias['sup']),
+                              minis=[(int(TS[m_['p0']]), float(arr[m_['p0']]), int(TS[m_['p1']]), float(arr[m_['p1']]), int(TS[m_['sw']]), m_['swpx']) for m_ in minis_])
             if c['sw'] is not None and c['ns'] >= MF_MIN_STRUCT and not (strict and pm is not None) and ((C[t] > c['sw_px']) if sup else (C[t] < c['sw_px'])):
                 sigs.append(sup)
         if bias is not None:
             fib_update()
-            if BS_ZONE and pm is None:                             # zona = swing struktur TERBARU dari rantai searah bias (saat MSS lawan menunggu, rantai itu sudah dipakai konfirmasi lawan: zona dibekukan)
+            if BS_MINI and BS_ZONE and pm is None:                  # zona = dari ujung swing struktur terakhir sampai swing mini-struktur terakhir
+                cc_ = ch[not bias['sup']]
+                if cc_['sw'] is not None and cc_['ns'] >= 1 and cc_.get('mini_last_px') is not None:
+                    zk_ = (cc_['ns'], cc_['mini_last_idx'], cc_['sw'])
+                    if bias.get('zkey') != zk_:
+                        bias['zkey'] = zk_; bias['zlo'] = float(cc_['sw_px'])
+                        zone_set(cc_['mini_last_px'], (int(cc_['prev']), int(cc_['p']), int(cc_['mini_last_idx']), int(cc_['ns']), cc_.get('touch_px'), cc_.get('touch_kind'), tuple(cc_['hist'][-8:]),
+                                                       int(cc_['sw']), float(cc_['sw_px']), float(cc_['mini_last_px']), list(cc_['minis'])))
+            elif BS_ZONE and pm is None:                             # zona = swing struktur TERBARU dari rantai searah bias (saat MSS lawan menunggu, rantai itu sudah dipakai konfirmasi lawan: zona dibekukan)
                 cc_ = ch[not bias['sup']]
                 if cc_['sw'] is not None and cc_['ns'] >= 1 and bias.get('zone') != float(cc_['sw_px']):
                     zone_set(cc_['sw_px'], (int(cc_['prev']), int(cc_['p']), int(cc_['sw']), int(cc_['ns']), cc_.get('touch_px'), cc_.get('touch_kind'), tuple(cc_['hist'][-8:])))
@@ -2125,10 +2189,13 @@ def _bsm_block(k, tr):
     lo_hi = ('low', 'high') if long_ else ('high', 'low')
     kind = ('MSS + struktur searah' if BS_CONFIRM > 0 else 'MSS') if tr['bias_kind'] == 'mss' else 'balik setelah ujung MSS ter-break'
     o = [f"Trade : {k}", f"Coin : {tr['symbol']}", f"Dir : {tr['d']}", f"Hasil bersih : {tr['r']:+.2f}R", f"Hasil kotor : {tr['gross_r']:+.2f}R", f"Fee : -{tr['fee_r']:.2f}R",
-         f"Exit oleh : {why}", f"Bias H1 : {tr['d']} ({kind})", *(([f"Ujung struktur terakhir : {g(tr['zone_src']['sw_px'])}, {_wib(tr['zone_src']['sw_ts'])[5:]} (swing {'low' if tr['d'] == 'Long' else 'high'} struktur ke-{tr['zone_src']['ns']} = batas {'atas' if tr['d'] == 'Long' else 'bawah'} zona)"]
+         f"Exit oleh : {why}", f"Bias H1 : {tr['d']} ({kind})", *(([f"Ujung struktur terakhir : {g(tr['zone_src']['sw_px'])}, {_wib(tr['zone_src']['sw_ts'])[5:]} (swing {'low' if tr['d'] == 'Long' else 'high'} struktur ke-{tr['zone_src']['ns']} = batas {('bawah' if tr['d'] == 'Long' else 'atas') if tr['zone_src'].get('minis') is not None else ('atas' if tr['d'] == 'Long' else 'bawah')} zona)"]
           + [f"P{tr['zone_src']['ns'] + 1 - (len(tr['zone_src']['plist']) - 1 - q_)} : {g(px_)}, {_wib(ts_)[5:]}" for q_, (ts_, px_) in enumerate(tr['zone_src']['plist'][-BS_TXT_NP:], start=len(tr['zone_src']['plist']) - len(tr['zone_src']['plist'][-BS_TXT_NP:]))]
-          + ([f"Syarat struktur ke-{tr['zone_src']['ns']} : P{tr['zone_src']['ns'] + 1} {'harus melewati wick' if tr['zone_src']['thr_kind'] != 'body' else 'menyentuh ujung body'} P{tr['zone_src']['ns']} = {g(tr['zone_src']['thr_px'])}"] if tr['zone_src'].get('thr_px') is not None else []))
-         if (BS_ZONE and tr.get('zone_src')) else []), *([f"Zona low (ujung bawah swing struktur terbaru s/d ujung MSS) : {tr['zone_lo']:.8g} - {tr['zone_hi']:.8g}" if tr['d'] == 'Long' else f"Zona high (ujung atas swing struktur terbaru s/d ujung MSS) : {tr['zone_hi']:.8g} - {tr['zone_lo']:.8g}"] if (BS_ZONE and tr.get('zone_hi') is not None) else []), *([f"Bias live saat MSS M5 : {tr['live_dir']} ({'trade dari bias LIVE' if tr.get('from_live') else 'trade dari bias LAMA ' + tr['d'] + ', bias live sudah ' + str(tr['live_dir'])})"] if tr.get('dual') and tr.get('live_dir') else []), (f"Ujung bias (acuan, tidak mengakhiri bias) : {g(tr['bias_end'])}" if not BS_M5_ENDBREAK else f"Ujung bias (invalidasi) : {g(tr['bias_end'])}"), f"Percobaan ke- (dalam bias yang sama) : {tr.get('try_no', 1)}",
+          + ([f"Syarat struktur ke-{tr['zone_src']['ns']} : P{tr['zone_src']['ns'] + 1} {'harus melewati wick' if tr['zone_src']['thr_kind'] != 'body' else 'menyentuh ujung body'} P{tr['zone_src']['ns']} = {g(tr['zone_src']['thr_px'])}"] if tr['zone_src'].get('thr_px') is not None else [])
+          + (([f"Mini-struktur dalam struktur ke-{tr['zone_src']['ns']} (dari ujung swing sampai tertinggi) : {len(tr['zone_src']['minis'])}"]
+              + [f"   m{i_ + 1} : P {g(m_['p0_px'])}, {_wib(m_['p0_ts'])[5:]} -> P {g(m_['p1_px'])}, {_wib(m_['p1_ts'])[5:]} | swing {g(m_['sw_px'])}, {_wib(m_['sw_ts'])[5:]}" for i_, m_ in enumerate(tr['zone_src']['minis'])]
+              + [f"Swing mini-struktur terakhir (batas {'atas' if tr['d'] == 'Long' else 'bawah'} zona) : {g(tr['zone_src']['mini_px'])}, {_wib(tr['zone_src']['mini_ts'])[5:]}"]) if tr['zone_src'].get('minis') is not None else []))
+         if (BS_ZONE and tr.get('zone_src')) else []), *([f"Zona low ({'ujung swing struktur s/d swing mini-struktur terakhir' if (tr.get('zone_src') or {}).get('minis') is not None else 'ujung bawah swing struktur terbaru s/d ujung MSS'}) : {tr['zone_lo']:.8g} - {tr['zone_hi']:.8g}" if tr['d'] == 'Long' else f"Zona high ({'swing mini-struktur terakhir s/d ujung swing struktur' if (tr.get('zone_src') or {}).get('minis') is not None else 'ujung atas swing struktur terbaru s/d ujung MSS'}) : {tr['zone_hi']:.8g} - {tr['zone_lo']:.8g}"] if (BS_ZONE and tr.get('zone_hi') is not None) else []), *([f"Bias live saat MSS M5 : {tr['live_dir']} ({'trade dari bias LIVE' if tr.get('from_live') else 'trade dari bias LAMA ' + tr['d'] + ', bias live sudah ' + str(tr['live_dir'])})"] if tr.get('dual') and tr.get('live_dir') else []), (f"Ujung bias (acuan, tidak mengakhiri bias) : {g(tr['bias_end'])}" if not BS_M5_ENDBREAK else f"Ujung bias (invalidasi) : {g(tr['bias_end'])}"), f"Percobaan ke- (dalam bias yang sama) : {tr.get('try_no', 1)}",
          *([f"Fibonacci H1 : 100% = {g(tr['fib_lo'])} ({'ujung swing struktur' + str(tr.get('fib_n', 0)) + ', ' + _wib(tr['fib_src_ts']) if tr.get('fib_src_ts') else 'ujung bias'}) | 0% = {g(tr['fib_hi'])} (titik {'tertinggi' if long_ else 'terendah'}) | {BS_FIB_DEPTH * 100:g}% = {g(tr['fib_hi'] + BS_FIB_DEPTH * (tr['fib_lo'] - tr['fib_hi']))}", f"Kedalaman low yang disentuh : {tr['fib_depth'] * 100:.0f}% range"] if tr.get('fib_lo') is not None and tr.get('fib_depth') is not None else []),
          *([f"1. Masuk zona (candle M5 pertama) : {_wib(tr['zin_ts'])}" if tr.get('zin_ts') else "1. Zona : tanpa batas (BS_ZONE=0 atau belum ada struktur)",
             f"2. Ujung {'bawah' if long_ else 'atas'} M5 awal (P, {lo_hi[0]} terdalam sejak masuk zona) : {_wib(tr['p0_ts'])} @ {g(tr['cand_px'])}",
