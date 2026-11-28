@@ -4,8 +4,10 @@ backtest_web.py -- NS_MODE=range_h1 (DEFAULT, strategi RANGE CANDLE H1). Set NS_
   Candle H1 berikutnya dibaca setelah CLOSE: wick melewati ujung range M = pengamatan selesai (cari range lain); close di luar wick R = break, hanya mematikan sisi itu (sisi lawan tetap diamati);
   wick melewati sisi R lalu close kembali di dalam R = SWEEP: sweep atas -> SHORT, sweep bawah -> LONG (dua arah: long dan short dari range yang sama boleh terjadi). Candle yang wick-nya menyapu dua sisi R:
   kalau satu sisi sudah dipakai/mati, dihitung sisi yang tersisa; kalau dua sisi masih tersedia = ambigu, diabaikan.
-  ENTRY limit di ujung wick candle inside R sisi yang di-sweep (short di high R, long di low R), dipasang setelah candle sweep close, batal kalau level TP tersentuh dulu. SL = ujung wick candle sweep +/- 0.5%
-  (RH_SL_BUFFER_PCT). TP = ujung wick lawan candle range M. Env: RH_SL_BUFFER_PCT (0.005), RH_SL_CAP_RANGE (0; 1 = SL tidak boleh melewati ujung range), RH_TWO_WAY (1), RH_ENTRY_AT (inside|sweep), RH_SL_BASIS (sweep|entry),
+  ENTRY limit di ujung wick candle inside R sisi yang di-sweep (short di high R, long di low R), dipasang setelah candle sweep close, batal kalau ujung range lawan tersentuh dulu. SL = ujung wick candle sweep +/- 0.5%
+  (RH_SL_BUFFER_PCT). EXIT (RH_EXIT_MODE): range_tp (DEFAULT) = tanpa TP awal; tiap kali range baru terbentuk (candle inside baru close) setelah limit terisi, TP dipasang di wick inside baru
+  (Long: wick atas inside, Short: wick bawah inside) dan dipindah ke inside terbaru tiap ada range baru (RH_EXIT_TP_UPDATE=0 = hanya range baru pertama); exit di TP atau SL. tp = TP ujung wick lawan candle range M
+  (versi lama). range = tanpa TP, ditutup di close candle inside range baru. Env: RH_SL_BUFFER_PCT (0.005), RH_SL_CAP_RANGE (0; 1 = SL tidak boleh melewati ujung range), RH_EXIT_MODE (range_tp|tp|range), RH_EXIT_TP_UPDATE (1), RH_TWO_WAY (1), RH_ENTRY_AT (inside|sweep), RH_SL_BASIS (sweep|entry),
   RH_INSIDE_STRICT (1), RH_BREAK_MODE (side|cancel), RH_M_NOT_INSIDE (0), RH_ORDER_TTL_H (0), RH_WAIT_MAX_H (0). ONE_POS_PER_DIR default 0 di mode ini (posisi searah boleh tumpang tindih). Endpoint /struktur.txt = daftar semua range
   dan kejadiannya per koin (?coin=XXXUSDT).
 
@@ -157,6 +159,9 @@ RH_INSIDE_STRICT  = os.environ.get('RH_INSIDE_STRICT', '1') == '1'         # 1 (
 RH_BREAK_MODE     = os.environ.get('RH_BREAK_MODE', 'side')                # side (default) = close di luar inside hanya mematikan sisi itu, sisi lawan tetap diamati | cancel = pengamatan range berhenti
 RH_M_NOT_INSIDE   = os.environ.get('RH_M_NOT_INSIDE', '0') == '1'          # 1 = candle range M sendiri tidak boleh inside candle sebelumnya
 RH_ORDER_TTL_H    = int(os.environ.get('RH_ORDER_TTL_H', '0'))             # kadaluarsa limit (jam), 0 = menunggu tanpa batas (batal kalau level TP tersentuh dulu)
+RH_EXIT_MODE      = os.environ.get('RH_EXIT_MODE', 'range_tp')             # range_tp (DEFAULT) = tanpa TP awal; saat range baru terbentuk (candle inside baru close) setelah limit terisi, TP dipasang di wick inside baru (Long: wick atas inside, Short: wick bawah inside), exit di TP atau SL | tp = TP di ujung wick lawan candle range (versi lama) | range = tanpa TP, posisi ditutup di close candle inside range baru
+RH_EXIT_TP_UPDATE = os.environ.get('RH_EXIT_TP_UPDATE', '1') == '1'        # (RH_EXIT_MODE=range_tp) 1 (default) = TP dipindah ke wick inside terbaru setiap ada range baru | 0 = TP dipasang sekali di range baru pertama
+RH_NOTP           = (NS_MODE == 'range_h1' and RH_EXIT_MODE != 'tp')
 RH_WAIT_MAX_H     = int(os.environ.get('RH_WAIT_MAX_H', '0'))              # batas tunggu sweep setelah candle inside (jam), 0 = tanpa batas (berakhir kalau wick melewati ujung range)
 MSS_WINDOW   = int(os.environ.get('MSS_WINDOW', 3000))            # mode mss_only: jendela pencarian MSS (candle M5) per percobaan
 NS_MIN_STRUCT = int(os.environ.get('NS_MIN_STRUCT', 2))              # minimal jumlah struktur sebelum MSS boleh (P1 tertembus P2 = 1, P2 tertembus P3 = 2). 0 = cara lama (MSS boleh tanpa struktur), 1 = cukup P1 tertembus P2
@@ -284,7 +289,7 @@ def _entry_desc():
     if NS_MODE == 'range_h1':
         return (f"candle range M -> candle inside R (high R {'<' if RH_INSIDE_STRICT else '<='} high M, low R {'>' if RH_INSIDE_STRICT else '>='} low M); sweep sisi R (wick lewat, close kembali di dalam R, tidak melewati ujung range M) = bias "
                 f"({'dua arah' if RH_TWO_WAY else 'satu arah'}); limit di ujung wick {'inside R' if RH_ENTRY_AT == 'inside' else 'candle sweep'}, SL ujung wick sweep +{RH_SL_BUF*100:g}%"
-                f"{' (dibatasi ujung range)' if RH_SL_CAP_RANGE else ''}, TP ujung wick lawan candle range M")
+                f"{' (dibatasi ujung range)' if RH_SL_CAP_RANGE else ''}, " + ({'tp': 'TP ujung wick lawan candle range M', 'range_tp': 'tanpa TP awal: saat range baru terbentuk TP dipasang di wick inside baru (Long: wick atas, Short: wick bawah)' + (', dipindah tiap range baru' if RH_EXIT_TP_UPDATE else ', sekali di range baru pertama'), 'range': 'tanpa TP: ditutup di close candle inside range baru'}.get(RH_EXIT_MODE, '')))
     if NS_MODE == 'bias_sweep' and BS_ENTRY == 'mss_m5':
         return "bias H1 dari struktur/MSS; low H1 tersentuh -> cari MSS di M5 (swing 1 kiri-1 kanan antara ujung bawah M5 s/d candle sentuh; kalau P bawah ditembus P baru, swing dihitung ulang) -> " + ("entry market di close MSS" if BS_M5_ENTRY == 'market' else "entry LIMIT di swing yang di-break (batal kalau TP tersentuh dulu)") + ", SL ujung MSS, TP titik tertinggi/terendah range"
     if NS_MODE == 'bias_sweep':
@@ -1903,7 +1908,7 @@ def _rh_find(symbol, h1, st):
                 s = dict(rid=rid, short=short, k_ts=int(T[k]), s_hi=float(H[k]), s_lo=float(L[k]), entry=entry, sl=sl, tp=lo if short else hi,
                          place_ts=int(T[k]) + H1_MS, capped=capped, rg=rg)
                 setups.append(s); rg['setups'].append(s); st['rh_setups'] += 1
-                ev.append(f"{tk} : sweep sisi {'atas' if short else 'bawah'} inside -> {side.upper()}, limit {entry:.8g}, SL {sl:.8g}{' (dibatasi ujung range)' if capped else ''}, TP {s['tp']:.8g}")
+                ev.append(f"{tk} : sweep sisi {'atas' if short else 'bawah'} inside -> {side.upper()}, limit {entry:.8g}, SL {sl:.8g}{' (dibatasi ujung range)' if capped else ''}" + ('' if RH_NOTP else f", TP {s['tp']:.8g}"))
                 if not RH_TWO_WAY or resolved():
                     end_txt = 'dua sisi sudah terpakai/mati' if RH_TWO_WAY else 'sweep pertama (satu arah)'; k += 1; break
             k += 1
@@ -1914,7 +1919,44 @@ def _rh_find(symbol, h1, st):
     return setups, log
 
 
-def _rh_sim(s, TS5, H5, L5):
+def _rh_exit_range_tp(s, fill, TS5, H5, L5, ctx):
+    """Tanpa TP awal. Tiap ada range baru (candle inside close) setelah limit terisi, TP dipasang di wick inside:
+    Long -> high R baru, Short -> low R baru (RH_EXIT_TP_UPDATE=1: dipindah tiap range baru). Exit di TP atau SL; SL duluan kalau kena bersamaan."""
+    short, sl = s['short'], s['sl']
+    fts = int(TS5[fill]); s['fill_ts'] = fts
+    idx = np.nonzero(ctx['ins'] & (ctx['T'] + H1_MS > fts))[0]
+    bnd = [int(np.searchsorted(TS5, int(ctx['T'][j] + H1_MS))) for j in idx]
+    tp = None; tp_j = None; tp_set = None; cur = fill; k = 0
+
+    def first_hit(a, e, tp_):
+        hs, ls = H5[a:e], L5[a:e]
+        if short:
+            slh = np.nonzero(hs >= sl)[0]; tph = np.nonzero(ls <= tp_)[0] if tp_ is not None else []
+        else:
+            slh = np.nonzero(ls <= sl)[0]; tph = np.nonzero(hs >= tp_)[0] if tp_ is not None else []
+        i_sl = int(slh[0]) if len(slh) else None; i_tp = int(tph[0]) if len(tph) else None
+        if i_sl is None and i_tp is None:
+            return None
+        if i_tp is None or (i_sl is not None and i_sl <= i_tp):
+            return 'SL', a + i_sl
+        return 'TP', a + i_tp
+    while True:
+        e = bnd[k] if k < len(bnd) else len(TS5)
+        hit = first_hit(cur, e, tp)
+        if hit:
+            why, j2 = hit
+            s.update(status='ok', why=why, exit_px=(sl if why == 'SL' else tp), exit_ts=int(TS5[j2]) + M5_MS, n_rng=k, tp_px=tp, tp_set_ts=tp_set,
+                     tp_m=(int(ctx['T'][tp_j - 1]) if tp_j is not None else None), tp_r=(int(ctx['T'][tp_j]) if tp_j is not None else None))
+            return
+        if k >= len(bnd):
+            s['status'] = 'open'; return
+        jr = int(idx[k])
+        if RH_EXIT_TP_UPDATE or tp is None:
+            tp = float(ctx['L'][jr] if short else ctx['H'][jr]); tp_j = jr; tp_set = int(ctx['T'][jr] + H1_MS)
+        cur = e; k += 1
+
+
+def _rh_sim(s, TS5, H5, L5, ctx=None):
     """Fill + exit satu setup di M5 (SL duluan kalau SL dan TP tersentuh di candle M5 yang sama)."""
     short, entry, sl, tp = s['short'], s['entry'], s['sl'], s['tp']
     j = int(np.searchsorted(TS5, s['place_ts']))
@@ -1926,11 +1968,26 @@ def _rh_sim(s, TS5, H5, L5):
         if (H5[j] >= entry) if short else (L5[j] <= entry):
             fill = j; break
         if (L5[j] <= tp) if short else (H5[j] >= tp):
-            s['status'] = 'batal'; return                     # level TP tersentuh sebelum limit terisi
+            s['status'] = 'batal'; return                     # level ujung range lawan tersentuh sebelum limit terisi: setup batal
         j += 1
     if fill is None:
         s['status'] = 'nofill'; return
     s['fill_ts'] = int(TS5[fill])
+    if RH_EXIT_MODE == 'range_tp':
+        _rh_exit_range_tp(s, fill, TS5, H5, L5, ctx); return
+    if RH_EXIT_MODE == 'range':
+        fts = int(TS5[fill])
+        idx = np.nonzero(ctx['ins'] & (ctx['T'] + H1_MS > fts))[0]
+        if len(idx):
+            jr = int(idx[0]); end_ts = int(ctx['T'][jr] + H1_MS); end5 = int(np.searchsorted(TS5, end_ts))
+        else:
+            jr = None; end5 = len(TS5)
+        for j2 in range(fill, end5):
+            if (H5[j2] >= sl) if short else (L5[j2] <= sl):
+                s.update(status='ok', why='SL', exit_px=sl, exit_ts=int(TS5[j2]) + M5_MS); return
+        if jr is None:
+            s['status'] = 'open'; return
+        s.update(status='ok', why='RANGE', exit_px=float(ctx['C'][jr]), exit_ts=end_ts, new_m=int(ctx['T'][jr - 1]), new_r=int(ctx['T'][jr])); return
     for j2 in range(fill, len(TS5)):
         if (H5[j2] >= sl) if short else (L5[j2] <= sl):
             s.update(status='ok', why='SL', exit_px=sl, exit_ts=int(TS5[j2]) + M5_MS); return
@@ -1945,25 +2002,36 @@ def rangeh1_process(symbol, m5df):
     h1 = build_h1(m5df)
     st = dict(rh_range=0, rh_exit=0, rh_brk=0, rh_double=0, rh_setups=0, rh_both=0, rh_expired=0, rh_cancel=0, rh_nofill=0, rh_open=0, rh_capped=0)
     setups, log = _rh_find(symbol, h1, st)
+    Th, Hh, Lh, Ch = (h1[x].values for x in ('ts', 'high', 'low', 'close'))
+    Th = Th.astype(np.int64); Hh = Hh.astype(float); Lh = Lh.astype(float); Ch = Ch.astype(float)
+    ins = np.zeros(len(h1), dtype=bool)
+    if RH_INSIDE_STRICT:
+        ins[1:] = (Hh[1:] < Hh[:-1]) & (Lh[1:] > Lh[:-1])
+    else:
+        ins[1:] = (Hh[1:] <= Hh[:-1]) & (Lh[1:] >= Lh[:-1])
+    ctx = dict(T=Th, C=Ch, H=Hh, L=Lh, ins=ins)
     cands = []
     for s in setups:
-        _rh_sim(s, TS5, H5, L5)
+        _rh_sim(s, TS5, H5, L5, ctx)
         if s['status'] == 'batal':
             st['rh_cancel'] += 1; continue
         if s['status'] == 'nofill':
             st['rh_nofill'] += 1; continue
         if s['capped']:
             st['rh_capped'] += 1
-        dist = abs(s['entry'] - s['sl']); rr = abs(s['tp'] - s['entry']) / dist
+        dist = abs(s['entry'] - s['sl']); rr = (abs(s['tp'] - s['entry']) / dist) if not RH_NOTP else 0.0
         why = s.get('why')
         if s['status'] == 'open':
             st['rh_open'] += 1; why = None
         rgs = s['rg']
-        cands.append(dict(symbol=symbol, sup=not s['short'], d='Short' if s['short'] else 'Long', mode='range_h1', entry=s['entry'], sl=s['sl'], tp=s['tp'],
-                          rr=rr, dist=dist, entry_ts=s['fill_ts'], exit_ts=(s.get('exit_ts') if why else None), exit_px=s.get('exit_px'), why=why,
-                          gross_r=(None if why is None else (rr if why == 'TP' else -1.0)), place_ts=s['place_ts'], m_ts=rgs['m'], r_ts=rgs['r'],
+        xp = s.get('exit_px')
+        gross = None if why is None else (((s['entry'] - xp) if s['short'] else (xp - s['entry'])) / dist)
+        cands.append(dict(symbol=symbol, sup=not s['short'], d='Short' if s['short'] else 'Long', mode='range_h1', entry=s['entry'], sl=s['sl'], tp=(None if RH_NOTP else s['tp']),
+                          rr=rr, dist=dist, entry_ts=s['fill_ts'], exit_ts=(s.get('exit_ts') if why else None), exit_px=xp, why=why,
+                          gross_r=gross, place_ts=s['place_ts'], n_rng=s.get('n_rng'), tp_px=s.get('tp_px'), tp_set_ts=s.get('tp_set_ts'), tp_m=s.get('tp_m'), tp_r=s.get('tp_r'),
+                          new_m=s.get('new_m'), new_r=s.get('new_r'), m_ts=rgs['m'], r_ts=rgs['r'],
                           rg_hi=rgs['hi'], rg_lo=rgs['lo'], r_hi=rgs['rhi'], r_lo=rgs['rlo'], s_ts=s['k_ts'], s_hi=s['s_hi'], s_lo=s['s_lo'],
-                          capped=s['capped'], two_way=(len(rgs['setups']) == 2), sl_pct=dist / s['entry'] * 100, tp_pct=abs(s['tp'] - s['entry']) / s['entry'] * 100))
+                          capped=s['capped'], two_way=(len(rgs['setups']) == 2), sl_pct=dist / s['entry'] * 100, tp_pct=(None if RH_NOTP else abs(s['tp'] - s['entry']) / s['entry'] * 100)))
     st['h1'] = len(h1)
     _RH_LOG[symbol] = dict(log=log, first=int(h1['ts'].iloc[0]) if len(h1) else None, last=int(h1['ts'].iloc[-1]) if len(h1) else None, n=len(h1))
     return cands, st
@@ -1971,15 +2039,49 @@ def rangeh1_process(symbol, m5df):
 
 def _rh_block(k, tr):
     gross = tr['r'] + tr['fee_r']
+    exit_lbl = {'TP': 'TP kena', 'SL': 'SL kena', 'RANGE': 'range baru terbentuk (ditutup di close candle inside)'}.get(tr['why'], tr['why'])
     o = [f"Trade : {k}", f"Coin : {tr['symbol']}", f"Dir : {tr['d']}", f"Hasil bersih : {tr['r']:+.2f}R", f"Hasil kotor : {gross:+.2f}R", f"Fee : {-tr['fee_r']:+.2f}R",
-         f"Exit oleh : {tr['why']} kena", f"Range ini dua arah : {'ya' if tr['two_way'] else 'tidak'}",
+         f"Exit oleh : {exit_lbl}", f"Range ini dua arah : {'ya' if tr['two_way'] else 'tidak'}",
          f"Candle range (M) : {_wib(tr['m_ts'])}", f"Range atas (high M) : {tr['rg_hi']:.8g}", f"Range bawah (low M) : {tr['rg_lo']:.8g}",
          f"Candle inside (R) : {_wib(tr['r_ts'])}", f"Wick R : high {tr['r_hi']:.8g}, low {tr['r_lo']:.8g}",
          f"Candle sweep (S) sisi {'atas' if tr['d'] == 'Short' else 'bawah'} : {_wib(tr['s_ts'])}", f"Wick S : high {tr['s_hi']:.8g}, low {tr['s_lo']:.8g}",
          f"Limit dipasang (setelah S close) : {_wib(tr['place_ts'])}", f"Limit terisi (candle M5) : {_wib(tr['entry_ts'])}",
-         f"Entry : {tr['entry']:.8g}", f"SL : {tr['sl']:.8g}" + (' (dibatasi di ujung range)' if tr.get('capped') else ''), f"TP : {tr['tp']:.8g}",
-         f"Jarak SL : {tr['sl_pct']:.2f}%", f"Jarak TP : {tr['tp_pct']:.2f}%", f"RR rencana : 1:{tr['rr']:.2f}",
-         f"Exit waktu : {_wib(tr['exit_ts'])}", f"Exit harga : {tr['exit_px']:.8g}", f"Balance setelah : ${tr['bal_after']:.2f}", ""]
+         f"Entry : {tr['entry']:.8g}", f"SL : {tr['sl']:.8g}" + (' (dibatasi di ujung range)' if tr.get('capped') else '')]
+    if not RH_NOTP:
+        o += [f"TP : {tr['tp']:.8g}", f"Jarak SL : {tr['sl_pct']:.2f}%", f"Jarak TP : {tr['tp_pct']:.2f}%", f"RR rencana : 1:{tr['rr']:.2f}"]
+    else:
+        o += ['TP : tidak ada TP awal' if RH_EXIT_MODE == 'range_tp' else 'TP : tidak dipakai', f"Jarak SL : {tr['sl_pct']:.2f}%"]
+        if RH_EXIT_MODE == 'range_tp':
+            o.append(f"Range baru terbentuk selama posisi : {tr.get('n_rng', 0)}")
+            if tr.get('tp_px') is not None:
+                o += [f"TP aktif (wick inside {'bawah' if tr['d'] == 'Short' else 'atas'}) : {tr['tp_px']:.8g}", f"TP dipasang pada : {_wib(tr['tp_set_ts'])}",
+                      f"Acuan TP range baru (M) : {_wib(tr['tp_m'])}", f"Acuan TP inside (R) : {_wib(tr['tp_r'])}"]
+            else:
+                o.append('TP aktif : belum ada (belum ada range baru saat SL kena)')
+        elif tr.get('new_m') is not None:
+            o += [f"Range baru (M) : {_wib(tr['new_m'])}", f"Range baru inside (R) : {_wib(tr['new_r'])}"]
+    dm = int((tr['exit_ts'] - tr['entry_ts']) / 60000)
+    o += [f"Exit waktu : {_wib(tr['exit_ts'])}", f"Exit harga : {tr['exit_px']:.8g}", f"Lama posisi : {dm // 60}j {dm % 60}m", f"Balance setelah : ${tr['bal_after']:.2f}", ""]
+    return o
+
+
+def _rh_exit_lines(trs):
+    """Rincian exit untuk ringkasan (mode tanpa TP awal)."""
+    if not RH_NOTP:
+        return []
+    rt = [t for t in trs if t.get('mode') == 'range_h1']
+    if not rt:
+        return []
+    bs = [t for t in rt if t['why'] == 'SL']; bo = [t for t in rt if t['why'] != 'SL']
+    hold = [(t['exit_ts'] - t['entry_ts']) / 3600000 for t in rt]
+    lbl = 'TP di wick inside range baru' if RH_EXIT_MODE == 'range_tp' else 'range baru terbentuk (ditutup di close)'
+    gr = lambda a: sum(t['r'] + t['fee_r'] for t in a)
+    o = ["", "RINCIAN EXIT (tanpa TP awal)", f"Exit karena SL : {len(bs)} trade, total {sum(t['r'] for t in bs):.2f}R",
+         f"Exit karena {lbl} : {len(bo)} trade, menang {sum(1 for t in bo if t['r'] > 0)}, kalah {sum(1 for t in bo if t['r'] <= 0)}, total {sum(t['r'] for t in bo):.2f}R (kotor {gr(bo):.2f}R)"]
+    if RH_EXIT_MODE == 'range_tp':
+        o += [f"Exit SL saat TP sudah terpasang : {sum(1 for t in bs if t.get('tp_px') is not None)} trade; sebelum ada range baru : {sum(1 for t in bs if t.get('tp_px') is None)} trade"]
+    o += [f"Rata-rata lama posisi : {sum(hold) / len(hold):.1f} jam (terlama {max(hold):.1f} jam)",
+          f"Hasil terbaik / terburuk : {max(t['r'] for t in rt):+.2f}R / {min(t['r'] for t in rt):+.2f}R", ""]
     return o
 
 
@@ -2614,7 +2716,7 @@ def _funnel_lines(f):
         return [f"Candle H1 dibaca : {f.get('h1',0)}", f"Range terbentuk (inside candle) : {f.get('rh_range',0)}", f"Pengamatan berakhir: wick melewati ujung range M : {f.get('rh_exit',0)}",
                 f"Candle break (close di luar inside, mematikan sisi itu) : {f.get('rh_brk',0)}", f"Candle wick dua sisi, dua sisi masih tersedia (diabaikan) : {f.get('rh_double',0)}",
                 f"Range kadaluarsa (batas tunggu) : {f.get('rh_expired',0)}", f"Setup sweep (arah jelas) : {f.get('rh_setups',0)}", f"Range yang menghasilkan dua arah : {f.get('rh_both',0)}",
-                f"SL dibatasi di ujung range : {f.get('rh_capped',0)}", f"Limit batal (level TP tersentuh dulu / kadaluarsa) : {f.get('rh_cancel',0)}", f"Limit belum terisi di akhir data : {f.get('rh_nofill',0)}",
+                f"SL dibatasi di ujung range : {f.get('rh_capped',0)}", f"Limit batal (ujung range lawan tersentuh dulu / kadaluarsa) : {f.get('rh_cancel',0)}", f"Limit belum terisi di akhir data : {f.get('rh_nofill',0)}",
                 f"Posisi terbuka di akhir data : {f.get('rh_open',0)}"]
     if NS_MODE == 'bias_sweep' and BS_ENTRY == 'mss_m5':
         return [f"P valid H1 : {f.get('bs_p',0)}", f"Struktur H1 : {f.get('bs_struct',0)}", f"MSS H1 (semua) : {f.get('bs_mss',0)}", f"Bias berubah/ditetapkan : {f.get('bs_bias',0)}",
@@ -2653,7 +2755,7 @@ def _funnel_lines(f):
 
 def _ringkasan_txt():
     with _lock:
-        s = dict(_summary); f = dict(_funnel); mo = list(_monthly); avg = _avg_monthly_growth; ps = list(_per_symbol); phase = _phase; cres = list(_coin_res)
+        s = dict(_summary); f = dict(_funnel); mo = list(_monthly); avg = _avg_monthly_growth; ps = list(_per_symbol); phase = _phase; cres = list(_coin_res); trs = list(_trades)
     if phase != 'done':
         return f'Backtest belum selesai (status: {phase}).\n'.encode('utf-8')
     o = [f"RINGKASAN BACKTEST {NS_MODE}", f"Periode : {BACKTEST_START_DATE} s/d {BACKTEST_END_DATE}", f"Koin : {len(SYMBOLS)}", *([f"Mode akun : TERPISAH per koin, modal ${INITIAL_BALANCE:g} masing-masing (total modal ${s.get('modal_total', 0):.0f}); angka di bawah = penjumlahan semua koin, Max drawdown = terburuk di antara koin"] if SEPARATE_COINS else []),
@@ -2661,7 +2763,7 @@ def _ringkasan_txt():
          f"Total R : {s['total_r']:.2f}", f"Rata-rata R : {s['avg_r']:.2f}", (f"Total R kotor (sebelum fee) : {s.get('gross_r',0):.2f}" if NS_MODE in ('mss_flip', 'bias_sweep', 'range_h1') else f"Rata-rata RR target : 1:{s.get('avg_rr',0):.2f}"), (f"Total fee : -{s.get('fee_r',0):.2f}R" if NS_MODE in ('mss_flip', 'bias_sweep', 'range_h1') else ""), (f"Rata-rata jarak SL : {s.get('avg_dist_pct',0):.2f}% dari entry" if NS_MODE in ('mss_flip', 'bias_sweep', 'range_h1') else ""), f"Balance awal : ${s.get('modal_total', INITIAL_BALANCE) if SEPARATE_COINS else INITIAL_BALANCE:.2f}" + (" (total semua koin)" if SEPARATE_COINS else ""),
          f"Balance akhir : ${s['final_balance']:.2f}", f"ROI : {s['roi']:+.1f}%", f"Max drawdown : {s['mdd']:.1f}%",
          f"Rata-rata growth per bulan : {avg:+.2f}%", "", "FUNNEL",
-         ] + _funnel_lines(f) + [
+         ] + _funnel_lines(f) + _rh_exit_lines(trs) + [
          ] + ([] if NS_MODE in ('fibo_bos', 'mss_flip', 'bias_sweep', 'range_h1') else [f"Dibuang: TP tidak valid (di sisi salah dari entry) : {f.get('tp_invalid',0)}"] if NS_MODE == 'mss_only' else [f"Ujung MSS tak pernah break-out : {f.get('no_bo',0)}", f"Kadaluarsa (tak break-in dlm {NS_EXPIRE_MIN} menit) : {f.get('expired',0)}", f"Dibuang: entry sudah lewat titik TP terjauh : {f.get('tp_invalid',0)}"]) + [
          f"Sinyal kembar dilewati : {f.get('dup',0)}", f"Dilewati posisi searah masih terbuka : {f.get('open_same',0)}",
          f"Dilewati batas slot : {f.get('slot',0)}", f"Dilewati margin kurang : {f.get('margin',0)}",
@@ -2675,7 +2777,7 @@ def _ringkasan_txt():
         for r in ps:
             c_ = cm[r['symbol']]; sm = c_['summ']
             o += [f"Coin : {r['symbol']}", f"Modal awal : ${INITIAL_BALANCE:g}", f"Trade : {sm['n_trades']}", f"Menang / Kalah : {sm['n_win']} / {sm['n_loss']}", f"Win rate : {sm['wr']:.1f}%",
-                  f"Total R : {sm['total_r']:.2f}", f"Total R kotor (sebelum fee) : {sm['gross_r']:.2f}", f"Total fee : -{sm['fee_r']:.2f}R", f"Rata-rata RR rencana : 1:{sm['avg_rr']:.2f}",
+                  f"Total R : {sm['total_r']:.2f}", f"Total R kotor (sebelum fee) : {sm['gross_r']:.2f}", f"Total fee : -{sm['fee_r']:.2f}R", (f"Rata-rata RR rencana : 1:{sm['avg_rr']:.2f}" if not RH_NOTP else f"Exit : tanpa TP awal ({RH_EXIT_MODE})"),
                   f"Balance akhir : ${sm['final_balance']:.2f}", f"ROI : {sm['roi']:+.1f}%", f"Max drawdown : {sm['mdd']:.1f}%", f"Rata-rata growth per bulan : {c_['avg']:+.2f}%",
                   f"Dilewati batas slot / margin / searah : {c_['bl']['slot']} / {c_['bl']['margin']} / {c_['bl']['open_same']}"]
             for m in c_['monthly']:
